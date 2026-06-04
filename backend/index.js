@@ -246,6 +246,74 @@ function scanSecretsInChanges(changes) {
   return findings;
 }
 
+// 🟢 Helper to analyze static complexity of source files
+function analyzeComplexity(fileContent, filePath) {
+  const lines = fileContent.split('\n');
+  const totalLines = lines.length;
+  let commentLines = 0;
+  let functionCount = 0;
+
+  const ext = path.extname(filePath).toLowerCase();
+
+  lines.forEach(line => {
+    const trimmed = line.trim();
+    if (trimmed === '') return;
+
+    // Comment Detection
+    if (['.js', '.jsx', '.ts', '.tsx', '.java', '.cpp', '.h', '.cs', '.go', '.rs', '.php'].includes(ext)) {
+      if (trimmed.startsWith('//') || trimmed.startsWith('/*') || trimmed.startsWith('*')) {
+        commentLines++;
+      }
+    } else if (ext === '.py' || ext === '.rb') {
+      if (trimmed.startsWith('#')) {
+        commentLines++;
+      }
+    } else if (ext === '.sql') {
+      if (trimmed.startsWith('--') || trimmed.startsWith('/*')) {
+        commentLines++;
+      }
+    } else if (ext === '.html' || ext === '.css') {
+      if (trimmed.startsWith('<!--') || trimmed.startsWith('/*')) {
+        commentLines++;
+      }
+    }
+
+    // Function Detection
+    if (['.js', '.jsx', '.ts', '.tsx'].includes(ext)) {
+      if (trimmed.includes('function ') || trimmed.includes('=>') || /^\s*(?:async\s+)?\w+\s*\([^)]*\)\s*\{/g.test(trimmed)) {
+        functionCount++;
+      }
+    } else if (ext === '.py') {
+      if (trimmed.startsWith('def ')) {
+        functionCount++;
+      }
+    } else if (ext === '.go') {
+      if (trimmed.startsWith('func ')) {
+        functionCount++;
+      }
+    } else if (['.java', '.cpp', '.cs'].includes(ext)) {
+      if (/(?:public|private|protected|static|\w+)\s+\w+\s*\([^)]*\)\s*(?:\{|const)?/g.test(trimmed)) {
+        functionCount++;
+      }
+    }
+  });
+
+  const complexityScore = Math.round((totalLines / 25) + (functionCount * 3));
+  let grade = 'A';
+  if (complexityScore > 40) grade = 'F';
+  else if (complexityScore > 25) grade = 'D';
+  else if (complexityScore > 15) grade = 'C';
+  else if (complexityScore > 8) grade = 'B';
+
+  return {
+    totalLines,
+    commentLines,
+    functionCount,
+    complexityScore,
+    grade
+  };
+}
+
 // 🟢 Helper to delete a folder recursively
 function deleteFolderRecursive(directoryPath) {
   if (fs.existsSync(directoryPath)) {
@@ -317,9 +385,14 @@ app.post('/api/analyze', async (req, res) => {
         reviewResult = mockAIReview(files, model);
       }
 
-      // 3. Inject Regex-based Secret Detections into the analysis result
+      // 3. Inject Regex-based Secret Detections & Complexity Metrics into the analysis result
       if (reviewResult && reviewResult.fileReviews) {
+        reviewResult.metrics = {};
+        
         files.forEach(file => {
+          // Calculate complexity metrics
+          reviewResult.metrics[file.name] = analyzeComplexity(file.content, file.name);
+
           const secretFindings = scanSecrets(file.content);
           if (secretFindings.length > 0) {
             // Make sure the file exists in reviews
@@ -659,6 +732,157 @@ Generated automatically by **RepoSage AI Generator**.`;
     mermaidDiagram: mockMermaid
   };
 }
+
+// 🟢 Route: Export Review Report to HTML
+app.post('/api/reports/html', (req, res) => {
+  const { repoName, analysis } = req.body;
+  if (!repoName || !analysis) {
+    return res.status(400).json({ error: 'Repository name and analysis result are required.' });
+  }
+
+  let fileRows = '';
+  
+  if (analysis && analysis.fileReviews) {
+    Object.keys(analysis.fileReviews).forEach(file => {
+      const review = analysis.fileReviews[file];
+      const allFindings = [
+        ...(review.bugs || []).map(f => ({ ...f, category: 'Bug' })),
+        ...(review.security || []).map(f => ({ ...f, category: 'Security' })),
+        ...(review.optimization || []).map(f => ({ ...f, category: 'Optimization' })),
+        ...(review.styling || []).map(f => ({ ...f, category: 'Styling' }))
+      ];
+      
+      allFindings.forEach(f => {
+        fileRows += `
+          <tr>
+            <td><strong>${file}</strong></td>
+            <td><span class="badge badge-${f.category.toLowerCase()}">${f.category}</span></td>
+            <td>${f.line}</td>
+            <td><strong>${f.type}</strong></td>
+            <td>${f.description}</td>
+            <td><code class="code-font">${f.suggestion.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</code></td>
+          </tr>
+        `;
+      });
+    });
+  }
+
+  const html = `
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <title>RepoSage Code Audit - ${repoName}</title>
+      <style>
+        body {
+          font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+          background: #0f172a;
+          color: #f1f5f9;
+          margin: 0;
+          padding: 40px;
+        }
+        .container {
+          max-width: 1200px;
+          margin: 0 auto;
+          background: #1e293b;
+          border-radius: 12px;
+          padding: 30px;
+          box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+          border: 1px solid rgba(255,255,255,0.05);
+        }
+        h1 {
+          font-size: 28px;
+          margin-top: 0;
+          color: #a855f7;
+          border-bottom: 2px solid rgba(168,85,247,0.2);
+          padding-bottom: 15px;
+        }
+        .meta {
+          font-size: 14px;
+          color: #94a3b8;
+          margin-bottom: 25px;
+          line-height: 1.6;
+        }
+        table {
+          width: 100%;
+          border-collapse: collapse;
+          margin-top: 20px;
+        }
+        th, td {
+          padding: 12px 15px;
+          text-align: left;
+          border-bottom: 1px solid rgba(255,255,255,0.08);
+          font-size: 13px;
+        }
+        th {
+          background-color: rgba(255,255,255,0.03);
+          color: #e2e8f0;
+          font-weight: 600;
+        }
+        tr:hover {
+          background-color: rgba(255,255,255,0.04);
+        }
+        tr:nth-child(even) {
+          background-color: rgba(255,255,255,0.015);
+        }
+        .badge {
+          display: inline-block;
+          padding: 3px 8px;
+          border-radius: 4px;
+          font-size: 10px;
+          font-weight: 700;
+          text-transform: uppercase;
+        }
+        .badge-bug { background: #ef4444; color: white; }
+        .badge-security { background: #f59e0b; color: #0f172a; }
+        .badge-optimization { background: #3b82f6; color: white; }
+        .badge-styling { background: #10b981; color: white; }
+        .code-font {
+          font-family: monospace;
+          background: rgba(0,0,0,0.2);
+          padding: 4px 8px;
+          border-radius: 4px;
+          color: #c084fc;
+          font-size: 12px;
+          white-space: pre-wrap;
+        }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <h1>🛡️ RepoSage AI Code Audit Report</h1>
+        <div class="meta">
+          <strong>Repository Name:</strong> ${repoName}<br>
+          <strong>Report Timestamp:</strong> ${new Date().toLocaleString()}<br>
+          <strong>Audited with:</strong> RepoSage GSSoC '26 Audit Engine
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>File Path</th>
+              <th>Category</th>
+              <th>Line</th>
+              <th>Finding Type</th>
+              <th>Description</th>
+              <th>Actionable Suggestion</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${fileRows || '<tr><td colspan="6" style="text-align:center;">🎉 No issues found! Your codebase is clean.</td></tr>'}
+          </tbody>
+        </table>
+        <div style="margin-top: 30px; text-align: center; font-size: 11px; color: #64748b; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 15px;">
+          RepoSage AI © 2026. Made with 💜 for GirlScript Summer of Code (GSSoC).
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+  
+  res.setHeader('Content-Type', 'text/html');
+  res.setHeader('Content-Disposition', `attachment; filename="${repoName}_AUDIT_REPORT.html"`);
+  return res.send(html);
+});
 
 app.listen(PORT, () => {
   console.log(`🟢 RepoSage Backend running on http://localhost:${PORT}`);

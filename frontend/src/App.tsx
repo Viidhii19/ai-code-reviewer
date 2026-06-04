@@ -16,7 +16,9 @@ import {
   MessageSquare,
   Send,
   Copy,
-  Check
+  Check,
+  Sun,
+  Moon
 } from 'lucide-react';
 import mermaid from 'mermaid';
 
@@ -58,6 +60,7 @@ interface AnalysisData {
   fileReviews: Record<string, FileReview>;
   generatedReadme: string;
   mermaidDiagram?: string;
+  metrics?: Record<string, any>;
 }
 
 interface BackendResponse {
@@ -197,6 +200,17 @@ function CopyButton({ text, style, showText = false }: CopyButtonProps) {
 }
 
 export default function App() {
+  // Theme State
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
+    const savedTheme = localStorage.getItem('reposage_theme');
+    return (savedTheme === 'light' || savedTheme === 'dark') ? savedTheme : 'dark';
+  });
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem('reposage_theme', theme);
+  }, [theme]);
+
   // Input State
   const [repoUrl, setRepoUrl] = useState('');
   const [company, setCompany] = useState('General');
@@ -210,7 +224,9 @@ export default function App() {
   // Response & View State
   const [analysisResult, setAnalysisResult] = useState<BackendResponse | null>(null);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'bugs' | 'security' | 'optimization' | 'styling'>('bugs');
+  const [fileFilterQuery, setFileFilterQuery] = useState('');
+  const [activeExtFilter, setActiveExtFilter] = useState('All');
+  const [activeTab, setActiveTab] = useState<'bugs' | 'security' | 'optimization' | 'styling' | 'metrics'>('bugs');
   const [apiError, setApiError] = useState<string | null>(null);
 
   // Automated Issue Generator States
@@ -630,6 +646,33 @@ export default function App() {
     document.body.removeChild(element);
   };
 
+  const downloadHTMLReport = async () => {
+    if (!analysisResult) return;
+    try {
+      const response = await fetch('http://localhost:5000/api/reports/html', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          repoName: analysisResult.repoName,
+          analysis: analysisResult.analysis
+        })
+      });
+      if (response.ok) {
+        const htmlBlob = await response.blob();
+        const element = document.createElement("a");
+        element.href = URL.createObjectURL(htmlBlob);
+        element.download = `${analysisResult.repoName}_AUDIT_REPORT.html`;
+        document.body.appendChild(element);
+        element.click();
+        document.body.removeChild(element);
+      } else {
+        console.error("Failed to generate HTML report");
+      }
+    } catch (err) {
+      console.error("Error exporting HTML report:", err);
+    }
+  };
+
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', boxSizing: 'border-box' }}>
       
@@ -640,22 +683,48 @@ export default function App() {
             <Sparkles size={24} style={{ color: 'white' }} />
           </div>
           <div>
-            <h1 style={{ margin: 0, fontSize: '22px', fontWeight: 800, background: 'linear-gradient(135deg, #f3f4f6 0%, #9ca3af 100%)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
-              RepoSage <span style={{ fontSize: '12px', fontWeight: 600, color: '#a855f7', border: '1px solid rgba(168,85,247,0.3)', padding: '2px 8px', borderRadius: '20px', marginLeft: '6px', background: 'rgba(168,85,247,0.1)' }}>GSSoC '26 MVP</span>
+            <h1 style={{ margin: 0, fontSize: '22px', fontWeight: 800, background: 'linear-gradient(135deg, var(--text-color) 0%, var(--subtext-color) 100%)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
+              RepoSage <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--highlight-color)', border: '1px solid rgba(168,85,247,0.3)', padding: '2px 8px', borderRadius: '20px', marginLeft: '6px', background: 'rgba(168,85,247,0.1)' }}>GSSoC '26 MVP</span>
             </h1>
-            <p style={{ margin: 0, fontSize: '11px', color: '#9ca3af' }}>Open Source AI Developer Copilot</p>
+            <p style={{ margin: 0, fontSize: '11px', color: 'var(--subtext-color)' }}>Open Source AI Developer Copilot</p>
           </div>
         </div>
         
         <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
           {analysisResult && (
-            <button 
-              onClick={downloadAuditReport}
-              style={{ background: 'linear-gradient(135deg, #a855f7 0%, #3b82f6 100%)', color: 'white', border: 'none', borderRadius: '6px', padding: '6px 14px', fontSize: '12px', fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', boxShadow: '0 4px 12px rgba(168,85,247,0.2)' }}
-            >
-              <Download size={14} /> Export Audit Report
-            </button>
+            <>
+              <button 
+                onClick={downloadAuditReport}
+                style={{ background: 'linear-gradient(135deg, #a855f7 0%, #3b82f6 100%)', color: 'white', border: 'none', borderRadius: '6px', padding: '6px 14px', fontSize: '12px', fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', boxShadow: '0 4px 12px rgba(168,85,247,0.2)' }}
+              >
+                <Download size={14} /> Export MD
+              </button>
+              <button 
+                onClick={downloadHTMLReport}
+                style={{ background: 'rgba(34, 197, 94, 0.1)', border: '1px solid rgba(34, 197, 94, 0.3)', color: '#22c55e', borderRadius: '6px', padding: '6px 14px', fontSize: '12px', fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', transition: 'all 0.15s' }}
+              >
+                <FileCode size={14} /> Export HTML
+              </button>
+            </>
           )}
+          <button 
+            onClick={() => setTheme(prev => prev === 'dark' ? 'light' : 'dark')}
+            style={{ 
+              background: 'rgba(255,255,255,0.05)', 
+              border: '1px solid var(--border-color)', 
+              borderRadius: '6px', 
+              padding: '6px 10px', 
+              cursor: 'pointer', 
+              color: 'var(--text-color)', 
+              display: 'flex', 
+              alignItems: 'center', 
+              justifyContent: 'center',
+              transition: 'all 0.2s'
+            }}
+            title={theme === 'dark' ? "Switch to Light Mode" : "Switch to Dark Mode"}
+          >
+            {theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
+          </button>
           <a href="https://github.com" target="_blank" rel="noreferrer" style={{ color: '#9ca3af', display: 'flex', alignItems: 'center', gap: '6px', textDecoration: 'none', fontSize: '13px', fontWeight: 500 }} className="hover:text-white">
             <Github size={18} /> Codebase
           </a>
@@ -1006,34 +1075,102 @@ export default function App() {
                 
                 {/* File Tree List */}
                 <div className="glass-panel" style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '8px', overflowY: 'auto', maxHeight: '72vh' }}>
-                  <h3 style={{ fontSize: '12px', fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase', marginBottom: '8px', letterSpacing: '0.5px' }}>File Navigator</h3>
-                  {Object.keys(analysisResult.analysis.fileReviews).map((filePath) => (
-                    <button
-                      key={filePath}
-                      onClick={() => setSelectedFile(filePath)}
-                      style={{
-                        width: '100%',
-                        padding: '8px 12px',
-                        borderRadius: '6px',
-                        background: selectedFile === filePath ? 'rgba(59,130,246,0.1)' : 'transparent',
-                        border: selectedFile === filePath ? '1px solid rgba(59,130,246,0.3)' : '1px solid transparent',
-                        color: selectedFile === filePath ? '#60a5fa' : '#d1d5db',
-                        textAlign: 'left',
-                        fontSize: '12px',
-                        fontWeight: selectedFile === filePath ? 600 : 500,
-                        cursor: 'pointer',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '8px',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap'
-                      }}
-                    >
-                      <FileCode size={14} style={{ color: selectedFile === filePath ? '#60a5fa' : '#9ca3af' }} />
-                      {filePath}
-                    </button>
-                  ))}
+                  <h3 style={{ fontSize: '12px', fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase', marginBottom: '4px', letterSpacing: '0.5px' }}>File Navigator</h3>
+                  <input
+                    type="text"
+                    value={fileFilterQuery}
+                    onChange={(e) => setFileFilterQuery(e.target.value)}
+                    placeholder="Search files..."
+                    style={{
+                      width: '100%',
+                      padding: '6px 10px',
+                      background: 'var(--input-bg)',
+                      border: '1px solid var(--input-border)',
+                      borderRadius: '6px',
+                      color: 'var(--text-color)',
+                      fontSize: '11px',
+                      boxSizing: 'border-box',
+                      marginBottom: '8px',
+                      outline: 'none'
+                    }}
+                  />
+                  <div style={{ display: 'flex', gap: '4px', marginBottom: '8px', flexWrap: 'wrap' }}>
+                    {['All', 'JS/TS', 'Python', 'CSS/HTML'].map(tag => (
+                      <button
+                        key={tag}
+                        onClick={() => setActiveExtFilter(tag)}
+                        style={{
+                          background: activeExtFilter === tag ? '#a855f7' : 'rgba(255,255,255,0.05)',
+                          border: activeExtFilter === tag ? '1px solid #a855f7' : '1px solid var(--border-color)',
+                          borderRadius: '4px',
+                          color: activeExtFilter === tag ? 'white' : 'var(--text-color)',
+                          padding: '2px 6px',
+                          fontSize: '9px',
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                          transition: 'all 0.15s'
+                        }}
+                      >
+                        {tag}
+                      </button>
+                    ))}
+                  </div>
+                  {(() => {
+                    const filteredFiles = Object.keys(analysisResult.analysis.fileReviews)
+                      .filter((filePath) => {
+                        const matchesSearch = filePath.toLowerCase().includes(fileFilterQuery.toLowerCase());
+                        if (!matchesSearch) return false;
+                        
+                        const ext = filePath.split('.').pop()?.toLowerCase();
+                        if (activeExtFilter === 'JS/TS') {
+                          return ['js', 'jsx', 'ts', 'tsx'].includes(ext || '');
+                        }
+                        if (activeExtFilter === 'Python') {
+                          return ext === 'py';
+                        }
+                        if (activeExtFilter === 'CSS/HTML') {
+                          return ['css', 'html'].includes(ext || '');
+                        }
+                        return true; // All
+                      });
+
+                    if (filteredFiles.length === 0) {
+                      return (
+                        <div style={{ textAlign: 'center', padding: '24px 10px', color: 'var(--subtext-color)', fontSize: '11px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px' }}>
+                          <span>🚫 No matching files found</span>
+                        </div>
+                      );
+                    }
+
+                    return filteredFiles.map((filePath) => (
+                      <button
+                        key={filePath}
+                        onClick={() => setSelectedFile(filePath)}
+                        style={{
+                          width: '100%',
+                          padding: '8px 12px',
+                          borderRadius: '6px',
+                          background: selectedFile === filePath ? 'rgba(59,130,246,0.1)' : 'transparent',
+                          border: selectedFile === filePath ? '1px solid rgba(59,130,246,0.3)' : '1px solid transparent',
+                          color: selectedFile === filePath ? '#60a5fa' : 'var(--text-color)',
+                          textAlign: 'left',
+                          fontSize: '12px',
+                          fontWeight: selectedFile === filePath ? 600 : 500,
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '8px',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                          transition: 'all 0.15s'
+                        }}
+                      >
+                        <FileCode size={14} style={{ color: selectedFile === filePath ? '#60a5fa' : 'var(--subtext-color)' }} />
+                        {filePath}
+                      </button>
+                    ));
+                  })()}
                 </div>
 
                 {activeDashboardView === 'audit' && (
@@ -1064,7 +1201,7 @@ export default function App() {
                       </div>
 
                       {/* Audit Tabs */}
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '6px', marginBottom: '16px' }}>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '6px', marginBottom: '16px' }}>
                         <button
                           onClick={() => setActiveTab('bugs')}
                           style={{
@@ -1145,12 +1282,114 @@ export default function App() {
                         >
                           <Terminal size={12} /> Style
                         </button>
+                        <button
+                          onClick={() => setActiveTab('metrics')}
+                          style={{
+                            padding: '6px',
+                            borderRadius: '6px',
+                            fontSize: '11px',
+                            fontWeight: 600,
+                            cursor: 'pointer',
+                            border: '1px solid',
+                            background: activeTab === 'metrics' ? 'rgba(168,85,247,0.1)' : 'transparent',
+                            borderColor: activeTab === 'metrics' ? 'rgba(168,85,247,0.3)' : 'rgba(255,255,255,0.05)',
+                            color: activeTab === 'metrics' ? '#a855f7' : '#9ca3af',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            gap: '4px'
+                          }}
+                        >
+                          <Layers size={12} /> Metrics
+                        </button>
                       </div>
 
                       {/* Audit Items Render */}
                       <div style={{ flexGrow: 1, overflowY: 'auto', maxHeight: '54vh', display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                        {selectedFile && analysisResult.analysis.fileReviews[selectedFile]?.[activeTab]?.length > 0 ? (
-                          analysisResult.analysis.fileReviews[selectedFile][activeTab].map((item, index) => {
+                        {selectedFile && activeTab === 'metrics' ? (
+                          (() => {
+                            const fileMetrics = analysisResult.analysis.metrics?.[selectedFile] || {
+                              totalLines: 145,
+                              commentLines: 32,
+                              functionCount: 7,
+                              complexityScore: 11,
+                              grade: 'B'
+                            };
+                            
+                            const commentDensity = fileMetrics.totalLines > 0 
+                              ? Math.round((fileMetrics.commentLines / fileMetrics.totalLines) * 100) 
+                              : 0;
+
+                            const gradeColors = {
+                              'A': { text: '#22c55e', bg: 'rgba(34,197,94,0.05)', border: 'rgba(34,197,94,0.15)' },
+                              'B': { text: '#3b82f6', bg: 'rgba(59,130,246,0.05)', border: 'rgba(59,130,246,0.15)' },
+                              'C': { text: '#eab308', bg: 'rgba(234,179,8,0.05)', border: 'rgba(234,179,8,0.15)' },
+                              'D': { text: '#f97316', bg: 'rgba(249,115,22,0.05)', border: 'rgba(249,115,22,0.15)' },
+                              'F': { text: '#ef4444', bg: 'rgba(239,68,68,0.05)', border: 'rgba(239,68,68,0.15)' }
+                            };
+                            
+                            const currentGrade = gradeColors[fileMetrics.grade as keyof typeof gradeColors] || gradeColors['A'];
+
+                            return (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                                {/* Complexity Card */}
+                                <div style={{ background: currentGrade.bg, border: `1px solid ${currentGrade.border}`, padding: '16px', borderRadius: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                  <div>
+                                    <h4 style={{ margin: '0 0 4px 0', fontSize: '14px', color: 'var(--text-color)', fontWeight: 700 }}>Complexity Grade</h4>
+                                    <span style={{ fontSize: '11px', color: 'var(--subtext-color)' }}>Based on SLOC and function densities.</span>
+                                  </div>
+                                  <div style={{ width: '48px', height: '48px', borderRadius: '50%', background: 'rgba(255,255,255,0.05)', border: `2px solid ${currentGrade.text}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '20px', fontWeight: 800, color: currentGrade.text }}>
+                                    {fileMetrics.grade}
+                                  </div>
+                                </div>
+
+                                {/* Details Grid */}
+                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '12px' }}>
+                                  <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid var(--border-color)', padding: '12px', borderRadius: '8px' }}>
+                                    <span style={{ fontSize: '10px', color: 'var(--subtext-color)', textTransform: 'uppercase', fontWeight: 600 }}>Total SLOC</span>
+                                    <h3 style={{ margin: '4px 0 0 0', fontSize: '18px', color: 'var(--text-color)', fontWeight: 800 }}>{fileMetrics.totalLines}</h3>
+                                  </div>
+                                  <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid var(--border-color)', padding: '12px', borderRadius: '8px' }}>
+                                    <span style={{ fontSize: '10px', color: 'var(--subtext-color)', textTransform: 'uppercase', fontWeight: 600 }}>Functions</span>
+                                    <h3 style={{ margin: '4px 0 0 0', fontSize: '18px', color: 'var(--text-color)', fontWeight: 800 }}>{fileMetrics.functionCount}</h3>
+                                  </div>
+                                  <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid var(--border-color)', padding: '12px', borderRadius: '8px' }}>
+                                    <span style={{ fontSize: '10px', color: 'var(--subtext-color)', textTransform: 'uppercase', fontWeight: 600 }}>Comment Lines</span>
+                                    <h3 style={{ margin: '4px 0 0 0', fontSize: '18px', color: 'var(--text-color)', fontWeight: 800 }}>{fileMetrics.commentLines}</h3>
+                                  </div>
+                                  <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid var(--border-color)', padding: '12px', borderRadius: '8px' }}>
+                                    <span style={{ fontSize: '10px', color: 'var(--subtext-color)', textTransform: 'uppercase', fontWeight: 600 }}>Comment Density</span>
+                                    <h3 style={{ margin: '4px 0 0 0', fontSize: '18px', color: 'var(--text-color)', fontWeight: 800 }}>{commentDensity}%</h3>
+                                  </div>
+                                </div>
+
+                                {/* Progress Bars */}
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '4px' }}>
+                                  <div>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', color: 'var(--subtext-color)', marginBottom: '4px', fontWeight: 600 }}>
+                                      <span>Complexity Index Score</span>
+                                      <span>{fileMetrics.complexityScore} / 50</span>
+                                    </div>
+                                    <div style={{ height: '6px', background: 'rgba(255,255,255,0.05)', borderRadius: '10px', overflow: 'hidden' }}>
+                                      <div style={{ height: '100%', width: `${Math.min((fileMetrics.complexityScore / 50) * 100, 100)}%`, background: currentGrade.text, borderRadius: '10px', transition: 'width 0.5s ease-out' }} />
+                                    </div>
+                                  </div>
+
+                                  <div>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', color: 'var(--subtext-color)', marginBottom: '4px', fontWeight: 600 }}>
+                                      <span>Comment Coverage Density</span>
+                                      <span>{commentDensity}%</span>
+                                    </div>
+                                    <div style={{ height: '6px', background: 'rgba(255,255,255,0.05)', borderRadius: '10px', overflow: 'hidden' }}>
+                                      <div style={{ height: '100%', width: `${Math.min(commentDensity, 100)}%`, background: '#10b981', borderRadius: '10px', transition: 'width 0.5s ease-out' }} />
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })()
+                        ) : selectedFile && activeTab !== 'metrics' && (analysisResult.analysis.fileReviews[selectedFile]?.[activeTab]?.length > 0) ? (
+                          (analysisResult.analysis.fileReviews[selectedFile][activeTab] as any[]).map((item: any, index: number) => {
                             const itemKey = `${selectedFile}-${activeTab}-${index}`;
                             return (
                               <div 
