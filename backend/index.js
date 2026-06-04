@@ -96,6 +96,26 @@ function scanSecrets(fileContent) {
       type: "Slack Incoming Webhook",
       regex: /https:\/\/hooks\.slack\.com\/services\/T[A-Z0-9]{8}\/B[A-Z0-9]{8}\/[A-Za-z0-9]{24}/g,
       description: "Hardcoded Slack Incoming Webhook detected. Allows external parties to send spam or phish users inside your workspace channels."
+    },
+    {
+      type: "Generic Private Key",
+      regex: /-----BEGIN[ A-Z0-9_-]*PRIVATE KEY-----/gi,
+      description: "Generic Private Key detected. Committing private keys to a repository exposes critical encryption keys, identity access, or infrastructure certificates."
+    },
+    {
+      type: "Common Environment Credential",
+      regex: /(?:password|passwd|secret|secret_key|private_key|api_key|token|auth_token)\s*=\s*['"][^'"]+['"]/gi,
+      description: "Hardcoded credential (e.g. password, secret key, token) detected. Storing raw configurations in code commits is a major security risk."
+    },
+    {
+      type: "Twilio Account SID",
+      regex: /\bAC[a-f0-9]{32}\b/gi,
+      description: "Potential Twilio Account SID detected. Exposing your Twilio SID allows unauthorized API access and billing charges."
+    },
+    {
+      type: "Twilio Auth Token",
+      regex: /(?:twilio_auth|twilio_token|auth_token)\s*[:=]\s*['"][a-f0-9]{32}['"]/gi,
+      description: "Potential Twilio Auth Token detected. Exposing this token allows attackers to authenticate and use your Twilio account."
     }
   ];
 
@@ -187,6 +207,26 @@ function scanSecretsInChanges(changes) {
       type: "Slack Incoming Webhook",
       regex: /https:\/\/hooks\.slack\.com\/services\/T[A-Z0-9]{8}\/B[A-Z0-9]{8}\/[A-Za-z0-9]{24}/g,
       description: "Hardcoded Slack Incoming Webhook detected. Allows external parties to send spam or phish users inside your workspace channels."
+    },
+    {
+      type: "Generic Private Key",
+      regex: /-----BEGIN[ A-Z0-9_-]*PRIVATE KEY-----/gi,
+      description: "Generic Private Key detected. Committing private keys to a repository exposes critical encryption keys, identity access, or infrastructure certificates."
+    },
+    {
+      type: "Common Environment Credential",
+      regex: /(?:password|passwd|secret|secret_key|private_key|api_key|token|auth_token)\s*=\s*['"][^'"]+['"]/gi,
+      description: "Hardcoded credential (e.g. password, secret key, token) detected. Storing raw configurations in code commits is a major security risk."
+    },
+    {
+      type: "Twilio Account SID",
+      regex: /\bAC[a-f0-9]{32}\b/gi,
+      description: "Potential Twilio Account SID detected. Exposing your Twilio SID allows unauthorized API access and billing charges."
+    },
+    {
+      type: "Twilio Auth Token",
+      regex: /(?:twilio_auth|twilio_token|auth_token)\s*[:=]\s*['"][a-f0-9]{32}['"]/gi,
+      description: "Potential Twilio Auth Token detected. Exposing this token allows attackers to authenticate and use your Twilio account."
     }
   ];
 
@@ -391,6 +431,54 @@ app.post('/api/webhook', async (req, res) => {
   }
 
   return res.json({ success: true, message: 'Webhook received.' });
+});
+
+// 🟢 Route: Create GitHub Issue automatically for Code Reviews
+app.post('/api/issues/create', async (req, res) => {
+  const { repoUrl, title, body, labels = [] } = req.body;
+  const token = process.env.GITHUB_PAT;
+
+  if (!token) {
+    return res.status(400).json({ error: 'GITHUB_PAT is not configured in backend/.env.' });
+  }
+
+  if (!repoUrl || !title || !body) {
+    return res.status(400).json({ error: 'Repository URL, title, and body are required.' });
+  }
+
+  try {
+    // Extract owner and repo from URL (e.g., https://github.com/owner/repo)
+    const cleanUrl = repoUrl.replace('.git', '').replace(/\/$/, '');
+    const parts = cleanUrl.split('/');
+    const repo = parts.pop();
+    const owner = parts.pop();
+
+    if (!owner || !repo) {
+      return res.status(400).json({ error: 'Invalid GitHub repository URL structure.' });
+    }
+
+    const octokit = new Octokit({ auth: token });
+    
+    console.log(`🤖 Creating GitHub Issue in ${owner}/${repo}: "${title}"`);
+    
+    const response = await octokit.rest.issues.create({
+      owner,
+      repo,
+      title,
+      body,
+      labels
+    });
+
+    return res.json({
+      success: true,
+      issueUrl: response.data.html_url,
+      number: response.data.number
+    });
+
+  } catch (err) {
+    console.error('❌ Create GitHub Issue Error:', err.message);
+    return res.status(500).json({ error: `Failed to create issue: ${err.message}` });
+  }
 });
 
 // 🟢 Helper to execute Webhook PR review logic
