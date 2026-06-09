@@ -29,8 +29,50 @@ if (!fs.existsSync(tempReposDir)) {
 // Global variable to cache the active repository context for chat functionality
 let activeRepositoryContext = null;
 
+// 🟢 Helper to load .reposageignore patterns from a directory
+function loadIgnorePatterns(dir) {
+  const patterns = [];
+  const ignoreFile = path.join(dir, '.reposageignore');
+  if (fs.existsSync(ignoreFile)) {
+    const content = fs.readFileSync(ignoreFile, 'utf-8');
+    for (const line of content.split('\n')) {
+      const trimmed = line.trim();
+      if (trimmed && !trimmed.startsWith('#')) {
+        patterns.push(trimmed);
+      }
+    }
+  }
+  return patterns;
+}
+
+// 🟢 Helper to check if a path matches any ignore pattern
+function isIgnored(filePath, patterns, baseDir) {
+  const relative = path.relative(baseDir, filePath);
+  for (const pattern of patterns) {
+    if (pattern.endsWith('/')) {
+      if (relative === pattern.slice(0, -1) || relative.startsWith(pattern)) {
+        return true;
+      }
+    } else if (pattern.startsWith('*.')) {
+      if (relative.endsWith(pattern.slice(1))) {
+        return true;
+      }
+    } else if (pattern.includes('*')) {
+      const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/]*');
+      try {
+        if (new RegExp(`^${escaped}$`).test(relative)) return true;
+      } catch { /* skip invalid pattern */ }
+    } else {
+      if (relative === pattern || relative.startsWith(pattern + '/') || relative.startsWith(pattern + path.sep)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 // 🟢 Helper to recursively read files
-function readFilesRecursively(dir, fileList = [], baseDir = dir) {
+function readFilesRecursively(dir, fileList = [], baseDir = dir, ignorePatterns = []) {
   const files = fs.readdirSync(dir);
   for (const file of files) {
     const filePath = path.join(dir, file);
@@ -41,8 +83,13 @@ function readFilesRecursively(dir, fileList = [], baseDir = dir) {
       continue;
     }
 
+    // Skip .reposageignore itself and any ignored paths
+    if (file === '.reposageignore' || isIgnored(filePath, ignorePatterns, baseDir)) {
+      continue;
+    }
+
     if (stat.isDirectory()) {
-      readFilesRecursively(filePath, fileList, baseDir);
+      readFilesRecursively(filePath, fileList, baseDir, ignorePatterns);
     } else {
       // Analyze only source code files (Python, JS, TS, HTML, CSS, Go, Rust, Java, C++, PHP, Ruby, SQL)
       const ext = path.extname(file).toLowerCase();
@@ -406,8 +453,9 @@ app.post('/api/analyze', async (req, res) => {
     }
 
     try {
-      // 1. Read files
-      const files = readFilesRecursively(clonePath);
+      // 1. Load ignore patterns and read files
+      const ignorePatterns = loadIgnorePatterns(clonePath);
+      const files = readFilesRecursively(clonePath, [], clonePath, ignorePatterns);
       
       if (files.length === 0) {
         deleteFolderRecursive(clonePath);
