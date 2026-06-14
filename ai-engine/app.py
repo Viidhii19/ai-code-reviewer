@@ -31,7 +31,6 @@ def sanitize_ai_output(text: str) -> str:
     text = re.sub(r'\bon\w+\s*=\s*["\'][^"\']*["\']', '', text)
     return text
 
-
 app = FastAPI(title="RepoSage AI Engine", description="FastAPI microservice for repository analysis and documentation generation")
 
 # Enable CORS
@@ -43,8 +42,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize Groq client
-api_key = os.getenv("VITE_GROQ_API_KEY")
+# Initialize Groq client (supports GROQ_API_KEY and legacy VITE_GROQ_API_KEY)
+api_key = os.getenv("GROQ_API_KEY") or os.getenv("VITE_GROQ_API_KEY")
 groq_client = None
 
 if api_key:
@@ -54,7 +53,7 @@ if api_key:
     except Exception as e:
         print(f"⚠️ Error initializing Groq client: {e}")
 else:
-    print("⚠️ VITE_GROQ_API_KEY not found in environment. Running in sandbox mode.")
+    print("⚠️ GROQ_API_KEY not found in environment. Running in sandbox mode.")
 
 # Data Models
 class FileItem(BaseModel):
