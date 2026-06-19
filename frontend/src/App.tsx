@@ -721,6 +721,7 @@ export default function App() {
   >([]);
   const [isChatLoading, setIsChatLoading] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [useRag, setUseRag] = useState(false);
 
   const handleSendChatMessage = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -743,6 +744,7 @@ export default function App() {
           history: chatHistory,
           model: selectedModel,
           sessionId,
+          useRag,
         }),
       });
 
@@ -4734,6 +4736,17 @@ export default function App() {
                     </div>
 
                     {/* Chat Input form */}
+                    <div style={{ display: "flex", alignItems: "center", gap: "10px", marginTop: "10px" }}>
+                      <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "11px", color: "#9ca3af", cursor: "pointer", whiteSpace: "nowrap" }}>
+                        <input
+                          type="checkbox"
+                          checked={useRag}
+                          onChange={(e) => setUseRag(e.target.checked)}
+                          style={{ accentColor: "#a855f7" }}
+                        />
+                        Chat with Repository
+                      </label>
+                    </div>
                     <form
                       onSubmit={handleSendChatMessage}
                       style={{
