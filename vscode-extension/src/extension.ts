@@ -1,9 +1,13 @@
 import * as vscode from "vscode";
+import { reviewFileContent, BackendResponse } from "./api";
+import { RepoSageDiagnostics } from "./diagnostics";
 import { RepoSageWebviewProvider } from "./webviewProvider";
-import { reviewFileContent } from "./api";
 
 export function activate(context: vscode.ExtensionContext) {
   console.log("RepoSage extension is now active!");
+
+  const diagnostics = new RepoSageDiagnostics();
+  context.subscriptions.push(diagnostics);
 
   const provider = new RepoSageWebviewProvider(context.extensionUri);
   context.subscriptions.push(
@@ -28,6 +32,7 @@ export function activate(context: vscode.ExtensionContext) {
       const fileName = document.fileName;
       const fileContent = document.getText();
 
+      diagnostics.clear();
       provider.setLoading(true);
       vscode.window.showInformationMessage(
         `RepoSage: Reviewing ${fileName}...`
@@ -35,8 +40,16 @@ export function activate(context: vscode.ExtensionContext) {
 
       const result = await reviewFileContent(fileName, fileContent);
 
-      if (result.success) {
-        provider.setContent(result.response || "");
+      if (result.success && result.response) {
+        try {
+          const parsed = JSON.parse(result.response) as BackendResponse;
+          diagnostics.updateFromResponse(parsed, fileName);
+        } catch {
+          vscode.window.showErrorMessage(
+            "RepoSage received an unexpected response format."
+          );
+        }
+        provider.setContent(result.response);
         vscode.window.showInformationMessage(
           "RepoSage review complete! Check the sidebar for details."
         );

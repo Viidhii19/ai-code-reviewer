@@ -6,6 +6,28 @@ export interface ReviewResponse {
   error?: string;
 }
 
+export interface ReviewItem {
+  type: string;
+  line: number;
+  description: string;
+  suggestion: string;
+}
+
+export interface FileReview {
+  bugs: ReviewItem[];
+  security: ReviewItem[];
+  optimization: ReviewItem[];
+  styling: ReviewItem[];
+}
+
+export interface AnalysisData {
+  fileReviews: Record<string, FileReview>;
+}
+
+export interface BackendResponse {
+  success: boolean;
+  analysis: AnalysisData;
+}
 function getConfig() {
   const config = vscode.workspace.getConfiguration("reposage");
   const apiUrl = config.get<string>("apiUrl", "http://localhost:5000");
