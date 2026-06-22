@@ -63,10 +63,15 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test": "node ./out/test/runTest.js"
   },
   "devDependencies": {
+    "@types/mocha": "^10.0.6",
     "@types/vscode": "^1.85.0",
+    "@vscode/test-electron": "^2.3.8",
+    "glob": "^10.3.10",
+    "mocha": "^10.3.0",
     "typescript": "^5.3.3"
   }
 }
