@@ -15,6 +15,7 @@
   "icon": "icon.png",
   "activationEvents": [
     "onCommand:reposage.reviewCurrentFile",
+    "onCommand:reposage.configureApiKey",
     "onView:reposage.sidebarView"
   ],
   "main": "./out/extension.js",
@@ -23,6 +24,10 @@
       {
         "command": "reposage.reviewCurrentFile",
         "title": "RepoSage: Review Current File"
+      },
+      {
+        "command": "reposage.configureApiKey",
+        "title": "RepoSage: Configure API Key"
       }
     ],
     "viewsContainers": {
@@ -54,7 +59,9 @@
         "reposage.apiKey": {
           "type": "string",
           "default": "",
-          "description": "API key for RepoSage backend authentication"
+          "description": "API key for RepoSage backend authentication",
+          "editPresentation": "singleline",
+          "order": 1
         }
       }
     }
