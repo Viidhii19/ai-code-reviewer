@@ -4,6 +4,7 @@ from text_splitter import (
     split_files,
     _detect_language,
     _generate_chunk_id,
+    _make_splitter,
     _language_separators,
 )
 
@@ -169,3 +170,91 @@ class TestSplitFiles:
         assert len(result) == 1
         assert result[0]["metadata"]["repoUrl"] == "https://github.com/user/repo"
         assert result[0]["metadata"]["fileName"] == "app.js"
+
+
+class TestLanguageSeparators:
+    def test_all_expected_languages_have_separators(self):
+        expected_langs = ["python", "javascript", "typescript", "java",
+                         "go", "rust", "cpp", "default"]
+        for lang in expected_langs:
+            assert lang in _language_separators, f"Missing separators for {lang}"
+            assert isinstance(_language_separators[lang], list)
+            assert len(_language_separators[lang]) > 0
+
+    def test_python_separators_include_function_keyword(self):
+        seps = _language_separators["python"]
+        assert "\nclass " in seps or "\n    " in seps
+        assert "\ndef " in seps
+
+    def test_javascript_separators_include_function_keywords(self):
+        seps = _language_separators["javascript"]
+        assert "\nclass " in seps or "\nfunction " in seps
+
+    def test_default_separators_falls_back_to_paragraph_splits(self):
+        seps = _language_separators["default"]
+        assert isinstance(seps, list)
+        assert len(seps) > 0
+
+
+class TestMakeSplitter:
+    def test_returns_recursive_character_text_splitter(self):
+        from langchain_text_splitters import RecursiveCharacterTextSplitter
+        splitter = _make_splitter("test.py")
+        assert isinstance(splitter, RecursiveCharacterTextSplitter)
+
+    def test_uses_default_chunk_size_when_not_specified(self):
+        splitter = _make_splitter("test.py")
+        assert splitter._chunk_size == 1000
+        assert splitter._chunk_overlap == 200
+
+    def test_respects_custom_chunk_size(self):
+        splitter = _make_splitter("test.py", chunk_size=500)
+        assert splitter._chunk_size == 500
+
+    def test_respects_custom_chunk_overlap(self):
+        splitter = _make_splitter("test.py", chunk_overlap=50)
+        assert splitter._chunk_overlap == 50
+
+    def test_uses_python_separators_for_py_file(self):
+        splitter = _make_splitter("test.py")
+        expected_seps = _language_separators["python"]
+        assert splitter._separators == expected_seps
+
+    def test_uses_javascript_separators_for_js_file(self):
+        splitter = _make_splitter("test.js")
+        expected_seps = _language_separators["javascript"]
+        assert splitter._separators == expected_seps
+
+    def test_uses_java_separators_for_java_file(self):
+        splitter = _make_splitter("Main.java")
+        expected_seps = _language_separators["java"]
+        assert splitter._separators == expected_seps
+
+    def test_uses_go_separators_for_go_file(self):
+        splitter = _make_splitter("main.go")
+        expected_seps = _language_separators["go"]
+        assert splitter._separators == expected_seps
+
+    def test_uses_rust_separators_for_rs_file(self):
+        splitter = _make_splitter("lib.rs")
+        expected_seps = _language_separators["rust"]
+        assert splitter._separators == expected_seps
+
+    def test_uses_cpp_separators_for_cpp_file(self):
+        splitter = _make_splitter("main.cpp")
+        expected_seps = _language_separators["cpp"]
+        assert splitter._separators == expected_seps
+
+    def test_uses_default_separators_for_unknown_extension(self):
+        splitter = _make_splitter("readme.md")
+        expected_seps = _language_separators["default"]
+        assert splitter._separators == expected_seps
+
+    def test_length_function_is_len(self):
+        splitter = _make_splitter("test.py")
+        assert splitter._length_function is len
+
+    def test_detects_typescript_separators(self):
+        splitter = _make_splitter("test.ts")
+        expected_seps = _language_separators["typescript"]
+        assert splitter._separators == expected_seps
