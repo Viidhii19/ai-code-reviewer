@@ -8,7 +8,7 @@ export function isValidRepoUrl(url) {
 
 export function parseRepoUrl(url) {
   if (!isValidRepoUrl(url)) return null;
-  const cleanUrl = url.replace(/\.git$/, '').replace(/\/$/, '');
+  const cleanUrl = url.replace(/\/+$/, '').replace(/\.git$/, '');
   const parts = cleanUrl.split('/');
   return {
     owner: parts[parts.length - 2],

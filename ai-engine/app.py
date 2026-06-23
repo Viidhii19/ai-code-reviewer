@@ -3,11 +3,12 @@ import json
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Optional, Set
 from groq import Groq
 from dotenv import load_dotenv
 import bleach
 from bleach.css_sanitizer import CSSSanitizer
+import vectorstore
 
 # Load environment variables: prefer local .env, fall back to backend/.env
 env_paths = [
@@ -152,6 +153,7 @@ class ChatRequest(BaseModel):
     message: str
     history: Optional[List[dict]] = Field(default_factory=list)
     model: Optional[str] = "llama-3.3-70b-versatile"
+    useRag: Optional[bool] = False
 
 # 🟢 Route: Root Check
 @app.get("/")
@@ -333,33 +335,33 @@ async def chat_with_repository(request: ChatRequest):
     message = request.message
     history = request.history
     
-    # 1. Structure the files representation for the prompt context
+    # 1. Build the system prompt injecting repository context
     repo_structure = []
     file_contents_summary = []
-    
-    for f in files[:20]:  # Limit context window to top 20 files
+    for f in files[:20]:
         repo_structure.append(f.name)
-        file_contents_summary.append(f"--- File: {f.name} ---\n{f.content[:1500]}") # Truncate large files
-        
+        file_contents_summary.append(f"--- File: {f.name} ---\n{f.content[:1500]}")
     structure_text = "\n".join(repo_structure)
     contents_text = "\n\n".join(file_contents_summary)
 
-    # 2a. Retrieve RAG chunks for the user's question
+    # 2. Optionally retrieve RAG chunks if toggle is on
     rag_context = ""
-    try:
-        from rag import query_chunks
-        rag_chunks = query_chunks(message, n_results=5)
-        if rag_chunks:
-            chunk_parts = []
-            for i, c in enumerate(rag_chunks, 1):
-                meta = c.get("metadata", {})
-                source = meta.get("file_path", meta.get("source", "unknown"))
-                chunk_parts.append(f"[Chunk {i} from {source}]\n{c['content']}")
-            rag_context = "\n\n".join(chunk_parts)
-    except Exception:
-        rag_context = ""
+    if request.useRag:
+        try:
+            from rag import query_chunks
+            rag_chunks = query_chunks(message, n_results=5)
+            if rag_chunks:
+                chunk_parts = []
+                for i, c in enumerate(rag_chunks, 1):
+                    meta = c.get("metadata", {})
+                    source = meta.get("file_path", meta.get("source", "unknown"))
+                    chunk_parts.append(f"[Chunk {i} from {source}]\n{c['content']}")
+                rag_context = "\n\n".join(chunk_parts)
+        except Exception as e:
+            print(f"⚠️ RAG query failed: {e}")
+            rag_context = ""
 
-    # 2. Build the system prompt injecting repository context
+    # 3. Build context section with optional RAG chunks
     if rag_context:
         context_section = f"""{contents_text}
 
@@ -427,6 +429,24 @@ class FileChanges(BaseModel):
 class ReviewDiffRequest(BaseModel):
     files: List[FileChanges]
     model: Optional[str] = "llama-3.3-70b-versatile"
+
+class CleanupRequest(BaseModel):
+    current_files: List[str]
+
+class VectorDeleteRequest(BaseModel):
+    file_path: str
+
+# 🟢 Route: Cleanup stale vectors (remove embeddings for deleted/modified files)
+@app.post("/api/rag/cleanup")
+async def cleanup_vectors(request: CleanupRequest):
+    result = vectorstore.cleanup_stale_vectors(set(request.current_files))
+    return result
+
+# 🟢 Route: Delete vectors for a specific file
+@app.post("/api/rag/delete-vectors")
+async def delete_vectors(request: VectorDeleteRequest):
+    removed = vectorstore.delete_vectors_for_file(request.file_path)
+    return {"removed_count": removed, "file_path": request.file_path}
 
 # 🟢 Route: AI Pull Request Review (Reviews specific file code additions/diffs)
 @app.post("/review-diff")
@@ -512,6 +532,7 @@ class SplitRequest(BaseModel):
     files: List[FileItem]
     chunk_size: Optional[int] = None
     chunk_overlap: Optional[int] = None
+    repo_url: Optional[str] = None
 
 
 class SplitResponse(BaseModel):
@@ -539,6 +560,7 @@ async def split_files_for_rag(request: SplitRequest):
         file_dicts,
         chunk_size=request.chunk_size,
         chunk_overlap=request.chunk_overlap,
+        repo_url=request.repo_url,
     )
     return SplitResponse(
         chunks=chunks,

@@ -13,6 +13,10 @@ This document describes the HTTP endpoints exposed by the two services in this p
   - [POST /api/analyze](#post-apianalyze)
 - [AI Engine Endpoints](#ai-engine-endpoints)
   - [POST /analyze](#post-analyze)
+  - [POST /chat](#post-chat)
+  - [POST /review-diff](#post-review-diff)
+  - [POST /api/rag/split](#post-apiragsplit)
+  - [POST /api/rag/query](#post-apiragquery)
 - [Error Responses](#error-responses)
 
 ---
@@ -208,6 +212,337 @@ When the AI Engine is running locally you can explore and test all endpoints thr
 
 ```
 http://localhost:8000/docs
+```
+
+---
+
+### POST /chat
+
+Converses with the AI engine about the provided codebase. Injects repository structure and file contents into the system prompt. Optionally retrieves semantically relevant chunks via RAG.
+
+#### Request
+
+**Headers**
+
+| Header         | Value              | Required |
+| -------------- | ------------------ | -------- |
+| `Content-Type` | `application/json` | Yes      |
+
+**Body**
+
+| Field      | Type             | Required | Description                                                               |
+| ---------- | ---------------- | -------- | ------------------------------------------------------------------------ |
+| `files`    | array\<FileItem> | Yes      | List of files with `{ name: string, content: string }`.                  |
+| `message`  | string           | Yes      | User message/question.                                                   |
+| `history`  | array\<object>  | No       | Prior chat messages as `[{ role: "user"|"assistant", content: string }]`. |
+| `model`    | string           | No       | Groq model name (default: `llama-3.3-70b-versatile`).                  |
+| `useRag`   | boolean          | No       | Whether to retrieve RAG chunks before answering (default: `false`).     |
+
+**FileItem object**
+
+| Field    | Type   | Description                    |
+| -------- | ------ | ------------------------------ |
+| `name`   | string | Relative file path.            |
+| `content`| string | Full file contents.            |
+
+**Example request body**
+
+```json
+{
+  "files": [
+    { "name": "src/utils/helper.py", "content": "def add(a, b):\n    return a + b" }
+  ],
+  "message": "What does this file do?",
+  "history": [],
+  "model": "llama-3.3-70b-versatile",
+  "useRag": false
+}
+```
+
+#### Response
+
+**Status `200 OK`**
+
+| Field       | Type   | Description                          |
+| ----------- | ------ | ------------------------------------ |
+| `response`  | string | AI assistant reply (HTML sanitized). |
+
+**Example response body**
+
+```json
+{
+  "response": "This file defines a simple `add` function that returns the sum of two arguments."
+}
+```
+
+#### curl Example
+
+```bash
+curl -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "files": [{"name": "helper.py", "content": "def add(a, b):\n    return a + b"}],
+    "message": "What does this file do?",
+    "useRag": false
+  }'
+```
+
+---
+
+### POST /review-diff
+
+Reviews code additions in a pull request diff using the Groq LLM. Returns structured inline review comments with file path, line number, and recommendation.
+
+#### Request
+
+**Headers**
+
+| Header         | Value              | Required |
+| -------------- | ------------------ | -------- |
+| `Content-Type` | `application/json` | Yes      |
+
+**Body**
+
+| Field   | Type                   | Required | Description                            |
+| ------- | ---------------------- | -------- | -------------------------------------- |
+| `files` | array\<FileChanges>  | Yes      | List of changed files with line diffs. |
+| `model` | string                | No       | Groq model name (default: `llama-3.3-70b-versatile`). |
+
+**FileChanges object**
+
+| Field     | Type                    | Description                                      |
+| --------- | ----------------------- | ------------------------------------------------ |
+| `path`    | string                 | Relative file path.                              |
+| `changes` | array\<DiffChange>    | Line additions in this file.                     |
+
+**DiffChange object**
+
+| Field     | Type   | Description                   |
+| --------- | ------ | ----------------------------- |
+| `line`    | number | Line number in the new file. |
+| `content` | string | New line content.             |
+
+**Example request body**
+
+```json
+{
+  "files": [
+    {
+      "path": "src/utils/helper.py",
+      "changes": [
+        { "line": 5, "content": "const SECRET = 'abc123'" },
+        { "line": 10, "content": "return process(input)" }
+      ]
+    }
+  ],
+  "model": "llama-3.3-70b-versatile"
+}
+```
+
+#### Response
+
+**Status `200 OK`**
+
+| Field      | Type                        | Description                    |
+| ---------- | --------------------------- | ------------------------------ |
+| `comments` | array\<ReviewComment>      | List of inline review comments. |
+
+**ReviewComment object**
+
+| Field  | Type   | Description                                         |
+| ------ | ------ | --------------------------------------------------- |
+| `path` | string | File path the comment refers to.                    |
+| `line` | number | Line number.                                        |
+| `body` | string | Markdown-formatted review text (HTML-sanitized).    |
+
+**Example response body**
+
+```json
+{
+  "comments": [
+    {
+      "path": "src/utils/helper.py",
+      "line": 5,
+      "body": "<!-- RepoSage Review Comment -->\n### Security Issue\n\nHardcoded credential detected.\n\n#### Recommendation\n\n```javascript\n// use environment variable\nconst SECRET = process.env.API_SECRET;\n```"
+    }
+  ]
+}
+```
+
+#### curl Example
+
+```bash
+curl -X POST http://localhost:8000/review-diff \
+  -H "Content-Type: application/json" \
+  -d '{
+    "files": [{"path": "helper.py", "changes": [{"line": 5, "content": "const SECRET = "abc123""}]}],
+    "model": "llama-3.3-70b-versatile"
+  }'
+```
+
+---
+
+### POST /api/rag/split
+
+Splits source files into text chunks suitable for RAG (Retrieval-Augmented Generation) ingestion. Internally uses langchain RecursiveCharacterTextSplitter with language-specific separators.
+
+#### Request
+
+**Headers**
+
+| Header         | Value              | Required |
+| -------------- | ------------------ | -------- |
+| `Content-Type` | `application/json` | Yes      |
+
+**Body**
+
+| Field          | Type                  | Required | Description                                           |
+| -------------- | --------------------- | -------- | ----------------------------------------------------- |
+| `files`        | array\<FileItem>     | Yes      | Files to split (same FileItem shape as /chat).       |
+| `chunk_size`   | number               | No       | Max characters per chunk (default: `1000`).          |
+| `chunk_overlap`| number               | No       | Overlap between chunks (default: `200`).             |
+| `repo_url`     | string               | No       | Repository URL stored in chunk metadata.               |
+
+**Example request body**
+
+```json
+{
+  "files": [
+    { "name": "src/app.py", "content": "..." }
+  ],
+  "chunk_size": 1000,
+  "chunk_overlap": 200,
+  "repo_url": "https://github.com/user/repo"
+}
+```
+
+#### Response
+
+**Status `200 OK`**
+
+| Field          | Type             | Description                          |
+| -------------- | ---------------- | ------------------------------------ |
+| `chunks`       | array\<Chunk>  | List of text chunks with metadata.   |
+| `total_chunks` | number          | Total number of chunks produced.     |
+| `total_files`  | number          | Number of input files processed.     |
+
+**Chunk object**
+
+| Field      | Type   | Description                                                    |
+| ---------- | ------ | -------------------------------------------------------------- |
+| `chunk_id` | string | SHA256-based 16-character hex identifier.                      |
+| `content`  | string | Chunk text content.                                            |
+| `metadata` | object | Source file, language, line range, chunk index, repo URL.       |
+
+**Example response body**
+
+```json
+{
+  "chunks": [
+    {
+      "chunk_id": "a1b2c3d4e5f60718",
+      "content": "def add(a, b):\n    return a + b",
+      "metadata": {
+        "source_file": "src/app.py",
+        "fileName": "src/app.py",
+        "language": "python",
+        "chunk_index": 0,
+        "total_chunks": 1,
+        "start_line": 0,
+        "end_line": 1,
+        "repoUrl": "https://github.com/user/repo"
+      }
+    }
+  ],
+  "total_chunks": 1,
+  "total_files": 1
+}
+```
+
+#### curl Example
+
+```bash
+curl -X POST http://localhost:8000/api/rag/split \
+  -H "Content-Type: application/json" \
+  -d '{
+    "files": [{"name": "src/app.py", "content": "def add(a, b):\n    return a + b"}],
+    "chunk_size": 1000,
+    "chunk_overlap": 200
+  }'
+```
+
+---
+
+### POST /api/rag/query
+
+Queries the RAG (ChromaDB) vector store for semantically relevant code chunks given a natural-language question. Chunks are ranked by cosine similarity.
+
+#### Request
+
+**Headers**
+
+| Header         | Value              | Required |
+| -------------- | ------------------ | -------- |
+| `Content-Type` | `application/json` | Yes      |
+
+**Body**
+
+| Field      | Type   | Required | Description                        |
+| ---------- | ------ | -------- | ---------------------------------- |
+| `question` | string | Yes      | Natural-language query.            |
+
+**Example request body**
+
+```json
+{
+  "question": "How is authentication handled in this codebase?"
+}
+```
+
+#### Response
+
+**Status `200 OK`**
+
+| Field          | Type               | Description                        |
+| -------------- | ------------------ | ---------------------------------- |
+| `chunks`       | array\<RagChunk> | Ranked list of relevant chunks.    |
+| `total_chunks` | number            | Number of chunks returned.         |
+
+**RagChunk object**
+
+| Field              | Type   | Description                                          |
+| ------------------ | ------ | ---------------------------------------------------- |
+| `chunk_id`         | string | Unique chunk identifier.                             |
+| `content`          | string | Chunk text content.                                  |
+| `metadata`         | object | Source file, language, line range, repo URL.         |
+| `similarity_score` | number | Cosine similarity score (1 = perfect match).        |
+
+**Example response body**
+
+```json
+{
+  "chunks": [
+    {
+      "chunk_id": "a1b2c3d4e5f60718",
+      "content": "def authenticate(token):\n    ...",
+      "metadata": {
+        "source_file": "src/auth.py",
+        "fileName": "src/auth.py",
+        "language": "python"
+      },
+      "similarity_score": 0.92
+    }
+  ],
+  "total_chunks": 1
+}
+```
+
+#### curl Example
+
+```bash
+curl -X POST http://localhost:8000/api/rag/query \
+  -H "Content-Type: application/json" \
+  -d '{"question": "How is authentication handled in this codebase?"}'
 ```
 
 ---

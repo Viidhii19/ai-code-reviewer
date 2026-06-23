@@ -23,6 +23,7 @@ export async function connectDatabase() {
     })
     .catch((err) => {
       isConnected = false;
+      connectionPromise = null;
       console.warn('⚠️ MongoDB connection failed, analytics will not be persisted:', err.message);
       return null;
     });
@@ -34,10 +35,10 @@ export function isDatabaseConnected() {
   return isConnected;
 }
 
-let reconnectAttempts = 0;
 export async function ensureConnection() {
   if (isConnected) return true;
 
+  let reconnectAttempts = 0;
   while (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
     reconnectAttempts++;
     console.log(`🔄 Reconnecting to MongoDB (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})...`);
@@ -63,6 +64,7 @@ export async function closeDatabase() {
   try {
     await mongoose.disconnect();
     isConnected = false;
+    connectionPromise = null;
     console.log('🔌 MongoDB connection closed.');
   } catch (err) {
     console.warn('⚠️ Error closing MongoDB connection:', err.message);

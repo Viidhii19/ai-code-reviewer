@@ -37,3 +37,8 @@ export function parseDiff(diffStr) {
   }
   return files;
 }
+
+export function countLinesInDiff(files) {
+  if (!Array.isArray(files)) return 0;
+  return files.reduce((total, file) => total + (Array.isArray(file.changes) ? file.changes.length : 0), 0);
+}

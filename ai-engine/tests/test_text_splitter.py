@@ -44,6 +44,25 @@ class TestLanguageDetection:
 
 
 class TestGenerateChunkId:
+
+    def test_different_files_produce_different_ids(self):
+        cid1 = _generate_chunk_id("file_a.py", 0)
+        cid2 = _generate_chunk_id("file_b.py", 0)
+        assert cid1 != cid2
+
+    def test_empty_filename_still_produces_id(self):
+        cid = _generate_chunk_id("", 0)
+        assert isinstance(cid, str)
+        assert len(cid) == 16
+
+    def test_whitespace_only_filename(self):
+        cid = _generate_chunk_id("   ", 0)
+        assert isinstance(cid, str)
+        assert len(cid) == 16
+
+    def test_same_file_different_indices_no_collision(self):
+        ids = [_generate_chunk_id("file.py", i) for i in range(20)]
+        assert len(ids) == len(set(ids)), "All chunk IDs for the same file should be unique"
     def test_chunk_id_format(self):
         cid = _generate_chunk_id("file.py", 0)
         assert isinstance(cid, str)
@@ -75,9 +94,12 @@ class TestSplitFileContent:
         assert len(result) == 1
         assert result[0]["content"] == content
         assert result[0]["metadata"]["source_file"] == "tiny.py"
+        assert result[0]["metadata"]["fileName"] == "tiny.py"
         assert result[0]["metadata"]["chunk_index"] == 0
         assert result[0]["metadata"]["total_chunks"] == 1
         assert result[0]["metadata"]["language"] == "python"
+        assert result[0]["metadata"]["start_line"] == 0
+        assert result[0]["metadata"]["end_line"] == 2
         assert "chunk_id" in result[0]
 
     def test_large_file_splits_into_multiple_chunks(self):
@@ -85,8 +107,11 @@ class TestSplitFileContent:
         result = split_file_content("large.js", content, chunk_size=500)
         assert len(result) > 1
         assert result[0]["metadata"]["source_file"] == "large.js"
+        assert result[0]["metadata"]["fileName"] == "large.js"
         assert result[0]["metadata"]["language"] == "javascript"
         assert result[0]["metadata"]["total_chunks"] == len(result)
+        assert "start_line" in result[0]["metadata"]
+        assert "end_line" in result[0]["metadata"]
 
     def test_chunk_overlap_produces_overlapping_content(self):
         content = "\n".join([f"line_{i}" for i in range(200)])
@@ -106,6 +131,15 @@ class TestSplitFileContent:
         assert py_result[0]["metadata"]["language"] == "python"
         assert md_result[0]["metadata"]["language"] == "default"
 
+    def test_repo_url_in_metadata(self):
+        content = "x = 1\ny = 2\nz = 3"
+        result = split_file_content("test.py", content, repo_url="https://github.com/user/repo")
+        assert len(result) == 1
+        assert result[0]["metadata"]["repoUrl"] == "https://github.com/user/repo"
+        assert result[0]["metadata"]["fileName"] == "test.py"
+        assert result[0]["metadata"]["start_line"] == 0
+        assert result[0]["metadata"]["end_line"] == 2
+
 
 class TestSplitFiles:
     def test_multiple_files(self):
@@ -116,7 +150,9 @@ class TestSplitFiles:
         result = split_files(files)
         assert len(result) == 2
         assert result[0]["metadata"]["source_file"] == "a.py"
+        assert result[0]["metadata"]["fileName"] == "a.py"
         assert result[1]["metadata"]["source_file"] == "b.py"
+        assert result[1]["metadata"]["fileName"] == "b.py"
 
     def test_empty_files_list(self):
         result = split_files([])
@@ -126,3 +162,10 @@ class TestSplitFiles:
         files = [{"name": "a.py"}, {"content": "x = 1"}]
         result = split_files(files)
         assert len(result) == 0
+
+    def test_repo_url_in_metadata(self):
+        files = [{"name": "app.js", "content": "const x = 1;\nconst y = 2;",},]
+        result = split_files(files, repo_url="https://github.com/user/repo")
+        assert len(result) == 1
+        assert result[0]["metadata"]["repoUrl"] == "https://github.com/user/repo"
+        assert result[0]["metadata"]["fileName"] == "app.js"

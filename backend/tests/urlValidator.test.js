@@ -46,3 +46,32 @@ test('parseRepoUrl should return null for invalid URLs', () => {
   assert.equal(parseRepoUrl(''), null);
   assert.equal(parseRepoUrl('https://github.com/owner/repo; rm -rf /'), null);
 });
+
+test('parseRepoUrl should return null for null/undefined input', () => {
+  assert.equal(parseRepoUrl(null), null);
+  assert.equal(parseRepoUrl(undefined), null);
+});
+
+test('parseRepoUrl should handle trailing slashes correctly', () => {
+  const result = parseRepoUrl('https://github.com/owner/repo/');
+  assert.notEqual(result, null);
+  assert.equal(result.owner, 'owner');
+  assert.equal(result.repo, 'repo');
+});
+
+test('parseRepoUrl should handle .git/ trailing suffix', () => {
+  const result = parseRepoUrl('https://github.com/owner/repo.git/');
+  assert.notEqual(result, null);
+  assert.equal(result.owner, 'owner');
+  assert.equal(result.repo, 'repo');
+});
+
+test('parseRepoUrl returns null for URLs with multiple trailing slashes', () => {
+  // isValidRepoUrl rejects URLs with multiple trailing slashes
+  assert.equal(parseRepoUrl('https://github.com/owner/repo//'), null);
+});
+
+test('parseRepoUrl should return null for URLs with extra path segments', () => {
+  assert.equal(parseRepoUrl('https://github.com/owner/repo/pull/1'), null);
+  assert.equal(parseRepoUrl('https://github.com/owner/repo/tree/main/src'), null);
+});

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseDiff } from '../utils/diffParser.js';
+import { parseDiff, countLinesInDiff } from '../utils/diffParser.js';
 
 test('parseDiff should return empty array for invalid input', () => {
   assert.deepEqual(parseDiff(null), []);
@@ -48,4 +48,32 @@ diff --git a/file2.js b/file2.js
   assert.equal(result[0].changes[0].line, 1);
   assert.equal(result[1].path, 'file2.js');
   assert.equal(result[1].changes[0].line, 5);
+});
+
+test('countLinesInDiff returns 0 for null/undefined input', () => {
+  assert.equal(countLinesInDiff(null), 0);
+  assert.equal(countLinesInDiff(undefined), 0);
+});
+
+test('countLinesInDiff returns 0 for empty array', () => {
+  assert.equal(countLinesInDiff([]), 0);
+});
+
+test('countLinesInDiff returns correct count for single file', () => {
+  const files = [{ path: 'a.js', changes: [{ line: 1, content: 'a' }, { line: 2, content: 'b' }, { line: 3, content: 'c' }] }];
+  assert.equal(countLinesInDiff(files), 3);
+});
+
+test('countLinesInDiff returns correct count for multiple files', () => {
+  const files = [
+    { path: 'a.js', changes: [{ line: 1, content: 'a' }] },
+    { path: 'b.js', changes: [{ line: 5, content: 'b' }, { line: 6, content: 'c' }] },
+    { path: 'c.js', changes: [] },
+  ];
+  assert.equal(countLinesInDiff(files), 3);
+});
+
+test('countLinesInDiff returns 0 when changes is missing or not an array', () => {
+  const files = [{ path: 'a.js' }, { path: 'b.js', changes: null }, { path: 'c.js', changes: undefined }];
+  assert.equal(countLinesInDiff(files), 0);
 });
