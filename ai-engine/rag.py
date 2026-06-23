@@ -90,3 +90,45 @@ def get_collection_stats() -> dict:
         "chunk_count": count,
         "embedding_dimension": get_embedding_dimension(),
     }
+
+
+def delete_chunks_for_file(file_path: str) -> int:
+    """Remove all ChromaDB chunks whose metadata contains the given file path.
+
+    Chunks are matched using the ``source_file`` metadata field that is set
+    during ingestion (via /api/rag/split).  Returns the number of chunks that
+    were deleted.
+    """
+    collection = _get_collection()
+    results = collection.get(where={"source_file": file_path})
+    ids_to_delete = results.get("ids", [])
+    if ids_to_delete:
+        collection.delete(ids=ids_to_delete)
+    return len(ids_to_delete)
+
+
+def cleanup_stale_chunks(current_files: set) -> dict:
+    """Remove ChromaDB chunks for any file path that is no longer in the
+    provided *current_files* set.
+
+    Returns a summary dict with ``stale_paths``, ``removed_count``, and
+    ``remaining_count`` so the API response shape stays identical to the
+    previous vectorstore-based implementation.
+    """
+    collection = _get_collection()
+    # Fetch all stored source_file values without retrieving embeddings
+    all_results = collection.get(include=["metadatas"])
+    stored_paths = {
+        m.get("source_file")
+        for m in (all_results.get("metadatas") or [])
+        if m.get("source_file")
+    }
+    stale_paths = stored_paths - current_files
+    removed_count = 0
+    for stale_path in stale_paths:
+        removed_count += delete_chunks_for_file(stale_path)
+    return {
+        "stale_paths": list(stale_paths),
+        "removed_count": removed_count,
+        "remaining_count": collection.count(),
+    }

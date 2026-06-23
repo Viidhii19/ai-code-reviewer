@@ -439,13 +439,15 @@ class VectorDeleteRequest(BaseModel):
 # 🟢 Route: Cleanup stale vectors (remove embeddings for deleted/modified files)
 @app.post("/api/rag/cleanup")
 async def cleanup_vectors(request: CleanupRequest):
-    result = vectorstore.cleanup_stale_vectors(set(request.current_files))
+    from rag import cleanup_stale_chunks
+    result = cleanup_stale_chunks(set(request.current_files))
     return result
 
 # 🟢 Route: Delete vectors for a specific file
 @app.post("/api/rag/delete-vectors")
 async def delete_vectors(request: VectorDeleteRequest):
-    removed = vectorstore.delete_vectors_for_file(request.file_path)
+    from rag import delete_chunks_for_file
+    removed = delete_chunks_for_file(request.file_path)
     return {"removed_count": removed, "file_path": request.file_path}
 
 # 🟢 Route: AI Pull Request Review (Reviews specific file code additions/diffs)
