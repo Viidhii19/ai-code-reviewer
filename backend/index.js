@@ -33,6 +33,26 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = verifyPort(process.env.PORT || 5000);
 
+// Trust the first hop of reverse proxy headers (Render, Railway, Heroku, Nginx, AWS ALB, etc.)
+// so that req.ip and express-rate-limit resolve the real client IP from X-Forwarded-For
+// rather than the internal proxy address.
+// Set TRUST_PROXY=false in .env to disable this when running without a proxy (e.g. local dev).
+const trustProxy = process.env.TRUST_PROXY !== 'false';
+if (trustProxy) {
+  app.set('trust proxy', 1);
+}
+
+// Helper used by rate limiters to extract the real client IP.
+// Takes the left-most address from X-Forwarded-For (the original client),
+// falling back to req.ip when the header is absent (direct connections).
+function getRealClientIp(req) {
+  const forwarded = req.headers['x-forwarded-for'];
+  if (forwarded && typeof forwarded === 'string') {
+    return forwarded.split(',')[0].trim();
+  }
+  return req.ip;
+}
+
 // Enable CORS with explicit origin
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'http://localhost:3000,http://localhost:5173').split(',');
 app.use(cors({
@@ -48,6 +68,7 @@ const analyzeLimiter = rateLimit({
   max: 5,
   standardHeaders: true,
   legacyHeaders: false,
+  keyGenerator: getRealClientIp,
   message: { error: 'Too many analyze requests. Please slow down and retry after 5 minutes.' }
 });
 const chatLimiter = rateLimit({
@@ -55,6 +76,7 @@ const chatLimiter = rateLimit({
   max: 30,
   standardHeaders: true,
   legacyHeaders: false,
+  keyGenerator: getRealClientIp,
   message: { error: 'Too many chat requests. Please slow down and retry after 1 minute.' }
 });
 
