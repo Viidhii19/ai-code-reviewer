@@ -1,6 +1,8 @@
 import os
 import pytest
-from unittest.mock import patch
+import sys
+from unittest.mock import patch, MagicMock
+import numpy as np
 
 os.environ["CHROMA_HOST"] = ""
 os.environ["CHROMA_PERSIST_DIR"] = ""
@@ -46,6 +48,47 @@ class TestIngestChunks:
         ids = ["c0"]
         rag.ingest_chunks(chunks, metadatas, ids)
         assert isolated_collection.count() == 1
+
+    def test_ingest_chunks_returns_correct_count_mock(self):
+        with patch("rag._get_collection") as mock_get_coll:
+            mock_collection = MagicMock()
+            mock_get_coll.return_value = mock_collection
+            mock_collection.count.return_value = 0
+
+            from rag import ingest_chunks
+            result = ingest_chunks(
+                chunks=["hello world"],
+                metadatas=[{"source": "test.py"}],
+                ids=["chunk-0"],
+            )
+            assert result == 1
+            mock_collection.add.assert_called_once()
+
+    def test_ingest_chunks_calls_add_with_correct_args(self):
+        with patch("rag._get_collection") as mock_get_coll:
+            mock_collection = MagicMock()
+            mock_get_coll.return_value = mock_collection
+            mock_collection.count.return_value = 0
+
+            from rag import ingest_chunks
+            chunks = ["chunk one", "chunk two"]
+            metadatas = [{"file": "a.py"}, {"file": "b.py"}]
+            ids = ["id-0", "id-1"]
+            ingest_chunks(chunks, metadatas, ids)
+            call_kwargs = mock_collection.add.call_args.kwargs
+            assert call_kwargs["documents"] == chunks
+            assert call_kwargs["metadatas"] == metadatas
+            assert call_kwargs["ids"] == ids
+
+    def test_ingest_chunks_empty_list_returns_zero(self):
+        with patch("rag._get_collection") as mock_get_coll:
+            mock_collection = MagicMock()
+            mock_get_coll.return_value = mock_collection
+            mock_collection.count.return_value = 0
+
+            from rag import ingest_chunks
+            result = ingest_chunks([], [], [])
+            assert result == 0
 
 
 class TestQueryChunks:
@@ -95,3 +138,28 @@ class TestGetCollectionStats:
         assert stats["chunk_count"] >= 1
         assert isinstance(stats["embedding_dimension"], int)
         assert stats["embedding_dimension"] > 0
+
+    def test_get_collection_stats_returns_expected_keys_mock(self):
+        with patch("rag._get_collection") as mock_get_coll:
+            mock_collection = MagicMock()
+            mock_collection.count.return_value = 42
+            mock_get_coll.return_value = mock_collection
+
+            from rag import get_collection_stats
+            result = get_collection_stats()
+            assert "collection" in result
+            assert "chunk_count" in result
+            assert "embedding_dimension" in result
+            assert result["chunk_count"] == 42
+            assert result["embedding_dimension"] == 384
+
+    def test_get_collection_stats_zero_count(self):
+        with patch("rag._get_collection") as mock_get_coll:
+            mock_collection = MagicMock()
+            mock_collection.count.return_value = 0
+            mock_get_coll.return_value = mock_collection
+
+            from rag import get_collection_stats
+            result = get_collection_stats()
+            assert result["chunk_count"] == 0
+            assert result["collection"] == "reposage_code_chunks"
