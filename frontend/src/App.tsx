@@ -60,6 +60,60 @@ try {
 
 // API Endpoint Configuration
 const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
+let sessionRequest: Promise<void> | null = null;
+
+const ensureApiSession = async () => {
+  if (!sessionRequest) {
+    sessionRequest = fetch(`${API_BASE_URL}/api/session`, {
+      method: "POST",
+      credentials: "include",
+    }).then(async (response) => {
+      if (response.status === 401) {
+        const apiKey = window.prompt("Enter the RepoSage backend API key:");
+        if (!apiKey) {
+          throw new Error("Backend API key is required to continue.");
+        }
+
+        const loginResponse = await fetch(`${API_BASE_URL}/api/session`, {
+          method: "POST",
+          credentials: "include",
+          headers: {
+            "x-api-key": apiKey,
+          },
+        });
+
+        if (!loginResponse.ok) {
+          throw new Error("Invalid backend API key.");
+        }
+        return;
+      }
+
+      if (!response.ok) {
+        throw new Error("Could not initialize a secure API session.");
+      }
+    }).catch((error) => {
+      sessionRequest = null;
+      throw error;
+    });
+  }
+
+  return sessionRequest;
+};
+
+const apiFetch = async (path: string, options: RequestInit = {}) => {
+  await ensureApiSession();
+  const headers = new Headers(options.headers);
+  if (!headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+
+  return fetch(`${API_BASE_URL}${path}`, {
+    ...options,
+    credentials: "include",
+    headers,
+  });
+};
+
 // Define Types
 interface ReviewItem {
   type: string;
@@ -768,12 +822,8 @@ export default function App() {
       : [category];
 
     try {
-      const response = await fetch(`${API_BASE_URL}/api/issues/create`, {
+      const response = await apiFetch("/api/issues/create", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": import.meta.env.VITE_REPOSAGE_API_KEY
-        },
         body: JSON.stringify({
           repoUrl,
           title,
@@ -823,12 +873,8 @@ export default function App() {
     setIsChatLoading(true);
 
     try {
-      const response = await fetch(`${API_BASE_URL}/api/chat`, {
+      const response = await apiFetch("/api/chat", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": import.meta.env.VITE_REPOSAGE_API_KEY
-        },
         body: JSON.stringify({
           message: userMessage,
           history: chatHistory,
@@ -1037,12 +1083,8 @@ export default function App() {
     );
 
     try {
-      const response = await fetch(`${API_BASE_URL}/api/analyze`, {
+      const response = await apiFetch("/api/analyze", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": import.meta.env.VITE_REPOSAGE_API_KEY
-        },
         body: JSON.stringify({
           repoUrl,
           company,
@@ -1116,12 +1158,8 @@ export default function App() {
       );
 
       try {
-        const response = await fetch(`${API_BASE_URL}/api/analyze`, {
+        const response = await apiFetch("/api/analyze", {
           method: "POST",
-          headers: { 
-            "Content-Type": "application/json",
-            "x-api-key": import.meta.env.VITE_REPOSAGE_API_KEY
-          },
           signal: controller.signal,
           body: JSON.stringify({
             repoUrl: repo.url,
@@ -1322,12 +1360,8 @@ export default function App() {
     const result = activeResult ?? analysisResult;
     if (!result) return;
     try {
-      const response = await fetch(`${API_BASE_URL}/api/reports/html`, {
+      const response = await apiFetch("/api/reports/html", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": import.meta.env.VITE_REPOSAGE_API_KEY
-        },
         body: JSON.stringify({
           repoName: result.repoName,
           analysis: result.analysis,
@@ -1353,12 +1387,8 @@ export default function App() {
     const result = activeResult ?? analysisResult;
     if (!result) return;
     try {
-      const response = await fetch(`${API_BASE_URL}/api/reports/pdf`, {
+      const response = await apiFetch("/api/reports/pdf", {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': import.meta.env.VITE_REPOSAGE_API_KEY
-        },
         body: JSON.stringify({
           repoName: result.repoName,
           analysis: result.analysis

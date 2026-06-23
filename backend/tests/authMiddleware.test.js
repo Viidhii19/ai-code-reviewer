@@ -4,9 +4,9 @@ import assert from 'node:assert/strict';
 // Set up REPOSAGE_API_KEY before importing the middleware
 process.env.REPOSAGE_API_KEY = 'test-secret-key';
 
-import { requireApiKey } from '../utils/authMiddleware.js';
+import { createFrontendSessionCookie, requireApiKey } from '../utils/authMiddleware.js';
 
-function makeMockReqRes({ providedKey = '' } = {}) {
+function makeMockReqRes({ providedKey = '', cookie = '' } = {}) {
   const res = {
     statusCode: null,
     body: null,
@@ -20,7 +20,10 @@ function makeMockReqRes({ providedKey = '' } = {}) {
     },
   };
   const req = {
-    headers: providedKey ? { 'x-api-key': providedKey } : {},
+    headers: {
+      ...(providedKey ? { 'x-api-key': providedKey } : {}),
+      ...(cookie ? { cookie } : {}),
+    },
     originalUrl: '/api/test',
   };
   return { req, res };
@@ -39,6 +42,32 @@ test('requireApiKey calls next() when valid key is provided', () => {
 
 test('requireApiKey returns 401 when API key is missing', () => {
   const { req, res } = makeMockReqRes({ providedKey: '' });
+  const next = () => {};
+
+  requireApiKey(req, res, next);
+
+  assert.equal(res.statusCode, 401);
+  assert.ok(res.body.error.includes('Unauthorized'), 'should return unauthorized error');
+});
+
+test('requireApiKey calls next() when a valid frontend session cookie is provided', () => {
+  const { res: cookieRes } = makeMockReqRes();
+  const cookie = createFrontendSessionCookie(cookieRes);
+  const { req, res } = makeMockReqRes({ cookie });
+  let nextCalled = false;
+  const next = () => { nextCalled = true; };
+
+  requireApiKey(req, res, next);
+
+  assert.equal(nextCalled, true, 'next() should be called for valid session cookie');
+  assert.equal(res.statusCode, null, 'no response should be sent for valid session cookie');
+});
+
+test('requireApiKey returns 401 when frontend session cookie is tampered', () => {
+  const { res: cookieRes } = makeMockReqRes();
+  const [sessionPair, ...attributes] = createFrontendSessionCookie(cookieRes).split(';');
+  const cookie = [sessionPair.replace(/.$/, 'x'), ...attributes].join(';');
+  const { req, res } = makeMockReqRes({ cookie });
   const next = () => {};
 
   requireApiKey(req, res, next);
