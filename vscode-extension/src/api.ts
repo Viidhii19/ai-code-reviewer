@@ -71,8 +71,10 @@ export async function reviewFileContent(
     }
 
     const data = await response.json();
+    console.log("RepoSage API response:", data);
     return { success: true, response: JSON.stringify(data, null, 2) };
   } catch (err: any) {
+    console.error("RepoSage API fetch failed:", err);
     return {
       success: false,
       error: `Failed to reach RepoSage backend at ${apiUrl}: ${err.message}`,
