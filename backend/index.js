@@ -206,7 +206,6 @@ app.post('/api/analyze', requireApiKey, analyzeLimiter, async (req, res) => {
       console.warn(`⚠️ System prompt contains non-Latin script characters: ${scriptRuns.join(', ')}`);
     }
   }
-
   function validatePrompt(prompt) {
     if (!prompt) return '';
     const maxLen = parseInt(process.env.MAX_SYSTEM_PROMPT_LENGTH) || 2000;
@@ -214,7 +213,6 @@ app.post('/api/analyze', requireApiKey, analyzeLimiter, async (req, res) => {
       .normalize('NFKC')
       .replace(/[\u200B-\u200D\uFEFF]/g, '')
       .slice(0, maxLen);
-    
     detectAnomalousPrompt(normalized);
 
     const homoglyphNormalized = normalizeHomoglyphs(normalized);
@@ -233,6 +231,7 @@ app.post('/api/analyze', requireApiKey, analyzeLimiter, async (req, res) => {
       'forget your', 'you are programmed', 'override protocol',
       'you have been', 'you must now', 'listen to me',
     ];
+
     for (const phrase of dangerous) {
       const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const pattern = escaped.split(/\s+/).join('\\s+');
