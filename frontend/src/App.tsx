@@ -23,7 +23,7 @@ export function QuickFixButton({ text, onApply }: { text: string; onApply: (text
     onApply(text);
     setApplied(true);
     setOpen(false);
-    setTimeout(() => setApplied(false), 2000);
+    timeoutRef.current = setTimeout(() => setApplied(false), 2000);
   };
 
   return (
