@@ -71,6 +71,15 @@ const analyzeLimiter = rateLimit({
   keyGenerator: getRealClientIp,
   message: { error: 'Too many analyze requests. Please slow down and retry after 5 minutes.' }
 });
+const issueLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: getRealClientIp,
+  message: { error: 'Too many issue creation requests.' }
+});
+
 const chatLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 30,
