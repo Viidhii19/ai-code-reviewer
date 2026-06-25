@@ -23,7 +23,7 @@ import { verifyWebhookSignature } from './utils/signatureVerifier.js';
 import { verifyPort } from './utils/envVerifier.js';
 import { mockAIReview } from './utils/mockAIReview.js';
 import Analytics from './models/Analytics.js';
-import Session from './models/Session.js';
+import Session, { estimateSessionSize } from './models/Session.js';
 import { connectDatabase, ensureConnection } from './config/db.js';
 
 dotenv.config();
@@ -351,16 +351,34 @@ app.post('/api/analyze', requireApiKey, analyzeLimiter, async (req, res) => {
 
       // 3. Persist the repository context for chat in MongoDB so it survives
       //    server restarts and works across multiple backend instances.
-      const sessionId = crypto.randomUUID();
-      try {
-        await Session.create({
-          sessionId,
-          repoUrl,
-          repoName,
-          files,
-        });
-      } catch (sessionErr) {
-        console.warn('⚠️ Failed to persist session context:', sessionErr.message);
+      const MAX_FILE_CONTENT_STORAGE = 50000;
+      const storedFiles = files.map(f => ({
+        name: f.name,
+        content: f.content.length > MAX_FILE_CONTENT_STORAGE
+          ? f.content.slice(0, MAX_FILE_CONTENT_STORAGE)
+          : f.content
+      }));
+
+      const MAX_SESSION_DOC_SIZE = 10 * 1024 * 1024;
+      const estimatedSize = estimateSessionSize(storedFiles);
+
+      let sessionId = null;
+      let sessionPersisted = false;
+      if (estimatedSize <= MAX_SESSION_DOC_SIZE) {
+        sessionId = crypto.randomUUID();
+        try {
+          await Session.create({
+            sessionId,
+            repoUrl,
+            repoName,
+            files: storedFiles,
+          });
+          sessionPersisted = true;
+        } catch (sessionErr) {
+          console.warn('⚠️ Failed to persist session context:', sessionErr.message);
+        }
+      } else {
+        console.warn(`⚠️ Session too large (${(estimatedSize / 1024 / 1024).toFixed(1)}MB), skipping persistence`);
       }
 
       // 4. Compute and persist analytics
@@ -406,7 +424,8 @@ app.post('/api/analyze', requireApiKey, analyzeLimiter, async (req, res) => {
         repoName,
         filesReviewedCount: files.length,
         analysis: reviewResult,
-        sessionId
+        sessionId,
+        sessionPersisted
       });
 
     } catch (err) {

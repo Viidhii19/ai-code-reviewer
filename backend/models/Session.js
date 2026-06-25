@@ -1,5 +1,17 @@
 import mongoose from 'mongoose';
 
+const MAX_SESSION_SIZE_BYTES = 10 * 1024 * 1024;
+
+export function estimateSessionSize(files) {
+  let size = 200;
+  size += 100;
+  for (const file of files) {
+    size += 50 + Buffer.byteLength(file.name, 'utf8') + Buffer.byteLength(file.content, 'utf8');
+    if (size > MAX_SESSION_SIZE_BYTES) return size;
+  }
+  return size;
+}
+
 // Each document stores the repository context for a single analysis session.
 // MongoDB automatically removes expired documents via the TTL index on createdAt
 // (expireAfterSeconds: 1800 = 30 minutes), which replaces the previous in-process
