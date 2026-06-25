@@ -496,7 +496,7 @@ app.post('/api/chat', requireApiKey, chatLimiter, async (req, res) => {
 
 // 🟢 Route: Proxy for RAG query — forwards to the AI engine
 app.post('/api/rag/query', requireApiKey, async (req, res) => {
-  const { question } = req.body;
+  const { question, repoUrl } = req.body;
   if (!question) {
     return res.status(400).json({ error: 'question is required.' });
   }
@@ -508,7 +508,7 @@ app.post('/api/rag/query', requireApiKey, async (req, res) => {
     const aiResponse = await fetch(`${baseUrl}/api/rag/query`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question })
+      body: JSON.stringify({ question, repo_url: repoUrl })
     });
 
     if (aiResponse.ok) {

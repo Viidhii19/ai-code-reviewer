@@ -498,22 +498,24 @@ class ReviewDiffRequest(BaseModel):
 
 class CleanupRequest(BaseModel):
     current_files: List[str]
+    repo_url: Optional[str] = None
 
 class VectorDeleteRequest(BaseModel):
     file_path: str
+    repo_url: Optional[str] = None
 
 # 🟢 Route: Cleanup stale vectors (remove embeddings for deleted/modified files)
 @app.post("/api/rag/cleanup")
 async def cleanup_vectors(request: CleanupRequest):
     from rag import cleanup_stale_chunks
-    result = cleanup_stale_chunks(set(request.current_files))
+    result = cleanup_stale_chunks(set(request.current_files), repo_url=request.repo_url)
     return result
 
 # 🟢 Route: Delete vectors for a specific file
 @app.post("/api/rag/delete-vectors")
 async def delete_vectors(request: VectorDeleteRequest):
     from rag import delete_chunks_for_file
-    removed = delete_chunks_for_file(request.file_path)
+    removed = delete_chunks_for_file(request.file_path, repo_url=request.repo_url)
     return {"removed_count": removed, "file_path": request.file_path}
 
 # 🟢 Route: AI Pull Request Review (Reviews specific file code additions/diffs)
@@ -613,6 +615,7 @@ class SplitResponse(BaseModel):
 
 class RagQueryRequest(BaseModel):
     question: str
+    repo_url: Optional[str] = None
 
 
 class RagQueryResponse(BaseModel):
@@ -644,7 +647,7 @@ async def split_files_for_rag(request: SplitRequest):
 async def query_rag_chunks(request: RagQueryRequest):
     from rag import query_chunks
 
-    chunks = query_chunks(request.question, n_results=5)
+    chunks = query_chunks(request.question, n_results=5, repo_url=request.repo_url)
     return RagQueryResponse(
         chunks=chunks,
         total_chunks=len(chunks),
