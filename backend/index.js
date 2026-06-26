@@ -704,7 +704,7 @@ async function runWebhookReview(owner, repo, pullNumber, headSha) {
     }
 
     // Run local secrets scanner
-    const secretFindings = scanSecretsInChanges(file.changes);
+    const { findings: secretFindings, truncated: scanTruncated, totalChanges: scanTotal, skippedReason: scanReason } = scanSecretsInChanges(file.changes);
     secretFindings.forEach(f => {
       commentsToPost.push({
         path: file.path,
@@ -712,6 +712,9 @@ async function runWebhookReview(owner, repo, pullNumber, headSha) {
         body: `<!-- RepoSage Review Comment -->\n${f.comment}`
       });
     });
+    if (scanTruncated) {
+      console.warn(`⚠️ Secrets scan truncated for ${file.path}: ${scanReason} (total ${scanTotal} changes)`);
+    }
 
     // Save list to send to FastAPI AI Engine
     filesToReview.push({

@@ -97,13 +97,16 @@ async function run() {
       reviewedFilesCount++;
 
       // 1. Run local secrets scanner
-      const localSecretIssues = scanSecretsInChanges(file.changes);
+      const { findings: localSecretIssues, truncated: scanTruncated, totalChanges: scanTotal, skippedReason: scanReason } = scanSecretsInChanges(file.changes);
       for (const issue of localSecretIssues) {
         commentsToPost.push({
           path: file.path,
           line: issue.line,
           body: `<!-- RepoSage Review Comment -->\n${issue.comment}`
         });
+      }
+      if (scanTruncated) {
+        console.warn(`⚠️ Secrets scan truncated for ${file.path}: ${scanReason} (total ${scanTotal} changes)`);
       }
 
       const changesText = file.changes

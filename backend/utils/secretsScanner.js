@@ -61,8 +61,8 @@ export const rules = [
   }
 ];
 
-const MAX_LINE_LENGTH = 10000;
-const SCAN_TIMEOUT_MS = 100;
+const MAX_LINE_LENGTH = parseInt(process.env.SECRETS_MAX_LINE_LENGTH, 10) || 10000;
+const SCAN_TIMEOUT_MS = parseInt(process.env.SECRETS_SCAN_TIMEOUT_MS, 10) || 100;
 
 export function scanSecrets(fileContent) {
   if (typeof fileContent !== 'string') return [];
@@ -89,19 +89,36 @@ export function scanSecrets(fileContent) {
   return findings;
 }
 
-const MAX_CHANGES_PROCESSED = 500;
+const MAX_CHANGES_PROCESSED = parseInt(process.env.SECRETS_MAX_CHANGES, 10) || 500;
 
 export function scanSecretsInChanges(changes) {
-  if (!Array.isArray(changes)) return [];
+  if (!Array.isArray(changes)) return { findings: [], truncated: false, totalChanges: 0, skippedReason: null };
   const findings = [];
   const startTime = Date.now();
-  const toProcess = changes.slice(0, MAX_CHANGES_PROCESSED);
-  for (const change of toProcess) {
-    if (Date.now() - startTime > SCAN_TIMEOUT_MS) break;
+  let changesProcessed = 0;
+  let stoppedEarly = false;
+  let reason = null;
+
+  for (const change of changes) {
+    if (changesProcessed >= MAX_CHANGES_PROCESSED) {
+      stoppedEarly = true;
+      reason = `Reached maximum of ${MAX_CHANGES_PROCESSED} changes processed.`;
+      break;
+    }
+    if (Date.now() - startTime > SCAN_TIMEOUT_MS) {
+      stoppedEarly = true;
+      reason = `Scan timeout of ${SCAN_TIMEOUT_MS}ms exceeded.`;
+      break;
+    }
+    changesProcessed++;
     if (!change || typeof change.content !== 'string') continue;
     if (change.content.length > MAX_LINE_LENGTH) continue;
     for (const rule of rules) {
-      if (Date.now() - startTime > SCAN_TIMEOUT_MS) break;
+      if (Date.now() - startTime > SCAN_TIMEOUT_MS) {
+        stoppedEarly = true;
+        reason = `Scan timeout of ${SCAN_TIMEOUT_MS}ms exceeded.`;
+        break;
+      }
       rule.regex.lastIndex = 0;
       if (rule.regex.test(change.content)) {
         findings.push({
@@ -111,7 +128,8 @@ export function scanSecretsInChanges(changes) {
         });
       }
     }
+    if (stoppedEarly) break;
   }
 
-  return findings;
+  return { findings, truncated: stoppedEarly, totalChanges: changes.length, skippedReason: reason };
 }
