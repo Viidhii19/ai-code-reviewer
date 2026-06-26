@@ -12,6 +12,7 @@ import {
   AlertOctagon,
   AlertTriangle,
   Download,
+  FileDown,
   Layers,
   Code2,
   MessageSquare,
@@ -24,6 +25,7 @@ import {
   Search,
   X,
 } from "lucide-react";
+import { handleMarkdownExport, handleHtmlExport } from "../utils/exportUtils";
 import mermaid from "mermaid";
 import DOMPurify from "dompurify";
 
@@ -1895,89 +1897,137 @@ export default function Dashboard() {
                   </span>
                 </div>
               )}
-              {/* Dashboard View Selection Tabs */}
-              <div style={{ display: "flex", gap: "10px" }}>
-                <button
-                  onClick={() => setActiveDashboardView("audit")}
-                  style={{
-                    background:
-                      activeDashboardView === "audit"
-                        ? "rgba(59,130,246,0.1)"
-                        : "rgba(255,255,255,0.03)",
-                    border: "1px solid",
-                    borderColor:
-                      activeDashboardView === "audit"
-                        ? "rgba(59,130,246,0.4)"
-                        : "rgba(255,255,255,0.08)",
-                    color:
-                      activeDashboardView === "audit" ? "#60a5fa" : "#9ca3af",
-                    borderRadius: "6px",
-                    padding: "8px 16px",
-                    fontSize: "12px",
-                    fontWeight: 700,
-                    cursor: "pointer",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "6px",
-                    transition: "all 0.2s ease-in-out",
-                  }}
-                >
-                  <Layers size={14} /> Code Audit Report
-                </button>
-                <button
-                  onClick={() => setActiveDashboardView("chat")}
-                  style={{
-                    background:
-                      activeDashboardView === "chat"
-                        ? "rgba(168,85,247,0.1)"
-                        : "rgba(255,255,255,0.03)",
-                    border: "1px solid",
-                    borderColor:
-                      activeDashboardView === "chat"
-                        ? "rgba(168,85,247,0.4)"
-                        : "rgba(255,255,255,0.08)",
-                    color:
-                      activeDashboardView === "chat" ? "#c084fc" : "#9ca3af",
-                    borderRadius: "6px",
-                    padding: "8px 16px",
-                    fontSize: "12px",
-                    fontWeight: 700,
-                    cursor: "pointer",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "6px",
-                    transition: "all 0.2s ease-in-out",
-                  }}
-                >
-                  <MessageSquare size={14} /> AI Code Chatbot
-                </button>
-                <button
-                  onClick={() => setActiveDashboardView("diagram")}
-                  style={{
-                    background:
-                      activeDashboardView === "diagram"
-                        ? "rgba(34,197,94,0.1)"
-                        : "rgba(255,255,255,0.03)",
-                    border: "1px solid",
-                    borderColor:
-                      activeDashboardView === "diagram"
-                        ? "rgba(34,197,94,0.4)"
-                        : "rgba(255,255,255,0.08)",
-                    color:
-                      activeDashboardView === "diagram" ? "#4ade80" : "#9ca3af",
-                    borderRadius: "6px",
-                    padding: "8px 16px",
-                    fontSize: "12px",
-                    fontWeight: 700,
-                    cursor: "pointer",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "6px",
-                    transition: "all 0.2s ease-in-out",
-                  }}
-                >
-                  <Sparkles size={14} /> Architecture Diagram
-                </button>
+              {/* Dashboard View Selection Tabs & Export Controls */}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px", flexWrap: "wrap", width: "100%" }}>
+                <div style={{ display: "flex", gap: "10px" }}>
+                  <button
+                    onClick={() => setActiveDashboardView("audit")}
+                    style={{
+                      background:
+                        activeDashboardView === "audit"
+                          ? "rgba(59,130,246,0.1)"
+                          : "rgba(255,255,255,0.03)",
+                      border: "1px solid",
+                      borderColor:
+                        activeDashboardView === "audit"
+                          ? "rgba(59,130,246,0.4)"
+                          : "rgba(255,255,255,0.08)",
+                      color:
+                        activeDashboardView === "audit" ? "#60a5fa" : "#9ca3af",
+                      borderRadius: "6px",
+                      padding: "8px 16px",
+                      fontSize: "12px",
+                      fontWeight: 700,
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "6px",
+                      transition: "all 0.2s ease-in-out",
+                    }}
+                  >
+                    <Layers size={14} /> Code Audit Report
+                  </button>
+                  <button
+                    onClick={() => setActiveDashboardView("chat")}
+                    style={{
+                      background:
+                        activeDashboardView === "chat"
+                          ? "rgba(168,85,247,0.1)"
+                          : "rgba(255,255,255,0.03)",
+                      border: "1px solid",
+                      borderColor:
+                        activeDashboardView === "chat"
+                          ? "rgba(168,85,247,0.4)"
+                          : "rgba(255,255,255,0.08)",
+                      color:
+                        activeDashboardView === "chat" ? "#c084fc" : "#9ca3af",
+                      borderRadius: "6px",
+                      padding: "8px 16px",
+                      fontSize: "12px",
+                      fontWeight: 700,
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "6px",
+                      transition: "all 0.2s ease-in-out",
+                    }}
+                  >
+                    <MessageSquare size={14} /> AI Code Chatbot
+                  </button>
+                  <button
+                    onClick={() => setActiveDashboardView("diagram")}
+                    style={{
+                      background:
+                        activeDashboardView === "diagram"
+                          ? "rgba(34,197,94,0.1)"
+                          : "rgba(255,255,255,0.03)",
+                      border: "1px solid",
+                      borderColor:
+                        activeDashboardView === "diagram"
+                          ? "rgba(34,197,94,0.4)"
+                          : "rgba(255,255,255,0.08)",
+                      color:
+                        activeDashboardView === "diagram" ? "#4ade80" : "#9ca3af",
+                      borderRadius: "6px",
+                      padding: "8px 16px",
+                      fontSize: "12px",
+                      fontWeight: 700,
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "6px",
+                      transition: "all 0.2s ease-in-out",
+                    }}
+                  >
+                    <Sparkles size={14} /> Architecture Diagram
+                  </button>
+                </div>
+
+                {/* Export Controls */}
+                <div style={{ display: "flex", gap: "10px" }}>
+                  <button
+                    onClick={() => analysisResult && handleHtmlExport(analysisResult.repoName, analysisResult.analysis, apiFetch)}
+                    style={{
+                      background: "rgba(59, 130, 246, 0.1)",
+                      border: "1px solid rgba(59, 130, 246, 0.3)",
+                      color: "#60a5fa",
+                      borderRadius: "6px",
+                      padding: "8px 16px",
+                      fontSize: "12px",
+                      fontWeight: 700,
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "6px",
+                      transition: "all 0.2s ease-in-out",
+                    }}
+                    className="hover:bg-blue-500/20"
+                    title="Export the complete audit report as HTML"
+                  >
+                    <Download size={14} /> Export HTML
+                  </button>
+                  <button
+                    onClick={() => analysisResult && handleMarkdownExport(analysisResult.repoName, analysisResult.analysis)}
+                    style={{
+                      background: "rgba(168, 85, 247, 0.1)",
+                      border: "1px solid rgba(168, 85, 247, 0.3)",
+                      color: "#c084fc",
+                      borderRadius: "6px",
+                      padding: "8px 16px",
+                      fontSize: "12px",
+                      fontWeight: 700,
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "6px",
+                      transition: "all 0.2s ease-in-out",
+                    }}
+                    className="hover:bg-purple-500/20"
+                    title="Export the complete audit report as Markdown"
+                  >
+                    <FileDown size={14} /> Export Markdown
+                  </button>
+                </div>
               </div>
 
               <div
