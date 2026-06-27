@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import SettingsModal from "../components/SettingsModal";
 import { MetricsChart } from '../components/MetricsChart';
+import CopyToClipboardButton from "../components/CopyToClipboardButton";
 import {
   Terminal,
   ShieldAlert,
@@ -298,54 +299,6 @@ function MermaidViewer({ chart, repoName }: MermaidViewerProps) {
   );
 }
 
-interface CopyButtonProps {
-  text: string;
-  style?: React.CSSProperties;
-  showText?: boolean;
-}
-
-function CopyButton({ text, style, showText = false }: CopyButtonProps) {
-  const [copied, setCopied] = useState(false);
-
-  const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch (err) {
-      console.error("Failed to copy text: ", err);
-    }
-  };
-
-  return (
-    <button
-      type="button"
-      onClick={handleCopy}
-      style={{
-        background: "transparent",
-        border: "none",
-        borderRadius: "4px",
-        padding: "4px 8px",
-        cursor: "pointer",
-        display: "inline-flex",
-        alignItems: "center",
-        gap: "6px",
-        justifyContent: "center",
-        color: copied ? "#22c55e" : "#9ca3af",
-        transition: "all 0.2s ease",
-        ...style,
-      }}
-      title={copied ? "Copied!" : "Copy Code"}
-    >
-      {copied ? <Check size={14} /> : <Copy size={14} />}
-      {showText && (
-        <span style={{ fontSize: "11px", fontWeight: 600 }}>
-          {copied ? "Copied!" : "Copy"}
-        </span>
-      )}
-    </button>
-  );
-}
 
 export default function Dashboard() {
   const [showSettings, setShowSettings] = useState(false);
@@ -3182,8 +3135,8 @@ export default function Dashboard() {
                                     >
                                       💡 AI Recommendation
                                     </span>
-                                    <CopyButton
-                                      text={item.suggestion}
+                                    <CopyToClipboardButton
+                                      textToCopy={item.suggestion}
                                       style={{ padding: "2px" }}
                                     />
                                   </div>
@@ -3423,8 +3376,8 @@ export default function Dashboard() {
                               Raw
                             </button>
                           </div>
-                          <CopyButton
-                            text={analysisResult.analysis.generatedReadme}
+                          <CopyToClipboardButton
+                            textToCopy={analysisResult.analysis.generatedReadme}
                             showText={true}
                             style={{
                               background: "rgba(168,85,247,0.1)",
@@ -3688,20 +3641,25 @@ export default function Dashboard() {
                               boxSizing: "border-box",
                             }}
                           >
-                            <span
-                              style={{
-                                fontSize: "9px",
-                                fontWeight: 700,
-                                color:
-                                  msg.role === "user" ? "#60a5fa" : "#c084fc",
-                                textTransform: "uppercase",
-                                marginBottom: "4px",
-                              }}
-                            >
-                              {msg.role === "user"
-                                ? "You"
-                                : "RepoSage Assistant"}
-                            </span>
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px", marginBottom: "4px" }}>
+                              <span
+                                style={{
+                                  fontSize: "9px",
+                                  fontWeight: 700,
+                                  color:
+                                    msg.role === "user" ? "#60a5fa" : "#c084fc",
+                                  textTransform: "uppercase",
+                                }}
+                              >
+                                {msg.role === "user"
+                                  ? "You"
+                                  : "RepoSage Assistant"}
+                              </span>
+                              <CopyToClipboardButton
+                                textToCopy={msg.content}
+                                style={{ padding: "2px" }}
+                              />
+                            </div>
                             <div
                               style={{
                                 fontSize: "12px",
