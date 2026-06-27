@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { useDebounce } from '../hooks/useDebounce';
 import SettingsModal from "../components/SettingsModal";
 import { MetricsChart } from '../components/MetricsChart';
 import {
@@ -368,6 +369,7 @@ export default function Dashboard() {
   );
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [fileFilterQuery, setFileFilterQuery] = useState('');
+  const debouncedFileFilterQuery = useDebounce(fileFilterQuery, 300);
   const [isClearHovered, setIsClearHovered] = useState(false);
   const [activeExtFilter, setActiveExtFilter] = useState('All');
   const [activeTab, setActiveTab] = useState<'bugs' | 'security' | 'optimization' | 'styling' | 'metrics'>('bugs');
@@ -2099,7 +2101,7 @@ export default function Dashboard() {
                     ).filter((filePath) => {
                       const matchesSearch = filePath
                         .toLowerCase()
-                        .includes(fileFilterQuery.toLowerCase());
+                        .includes(debouncedFileFilterQuery.toLowerCase());
                       if (!matchesSearch) return false;
 
                       const ext = filePath.split(".").pop()?.toLowerCase();
