@@ -90,6 +90,15 @@ const chatLimiter = rateLimit({
   message: { error: 'Too many chat requests. Please slow down and retry after 1 minute.' }
 });
 
+const exportLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  store: redisClient ? new RedisStore({ sendCommand: (...args) => redisClient.call(...args) }) : undefined,
+  message: { error: 'Too many export requests. Please slow down and retry after 1 minute.' }
+});
+
 // Capture raw body for webhook signature verification before JSON parsing
 app.use(express.json({
   verify: (req, _res, buf) => {
@@ -820,7 +829,7 @@ Please ensure the AI Engine service is running and re-trigger the review for a c
 
 
 // 🟢 Route: Export Review Report to HTML
-app.post('/api/reports/html', requireApiKey, (req, res) => {
+app.post('/api/reports/html', requireApiKey, exportLimiter, (req, res) => {
   const { repoName, analysis } = req.body;
   if (!repoName || !analysis) {
     return res.status(400).json({ error: 'Repository name and analysis result are required.' });
@@ -971,7 +980,7 @@ app.post('/api/reports/html', requireApiKey, (req, res) => {
 });
 
 // 🟢 Route: Export Review Report to PDF
-app.post('/api/reports/pdf', requireApiKey, (req, res) => {
+app.post('/api/reports/pdf', requireApiKey, exportLimiter, (req, res) => {
   const { repoName, analysis } = req.body;
   if (!repoName || !analysis) {
     return res.status(400).json({ error: 'Repository name and analysis result are required.' });
