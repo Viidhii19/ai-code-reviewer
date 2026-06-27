@@ -302,7 +302,7 @@ async def analyze_repository(request: AnalyzeRequest):
     files = request.files
     company = request.company
     language = request.language
-    temperature = request.temperature or 0.7
+    temperature = request.temperature if request.temperature is not None else 0.7
     max_tokens = request.maxTokens or 2048
     batch_size = request.batchSize or 5
     custom_system_prompt = validate_system_prompt(request.systemPrompt or "")
