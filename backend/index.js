@@ -166,6 +166,72 @@ function cleanupTimers() {
   clearInterval(cacheMetricsTimer);
 }
 
+const HOMOGLYPH_MAP = {
+  '\u0430': 'a', '\u0435': 'e', '\u043E': 'o', '\u0441': 'c', '\u0440': 'p',
+  '\u0445': 'x', '\u0443': 'y', '\u0432': 'b', '\u043D': 'h', '\u043A': 'k',
+  '\u043C': 'm', '\u0438': 'i', '\u0428': 'W', '\u03BF': 'o', '\u03B5': 'e', '\u03B1': 'a'
+};
+
+function normalizeHomoglyphs(text) {
+  return text.split('').map(ch => HOMOGLYPH_MAP[ch] || ch).join('');
+}
+
+function detectAnomalousPrompt(prompt) {
+  const totalChars = prompt.length;
+  if (totalChars === 0) return;
+  const homoglyphCount = [...prompt].filter(ch => HOMOGLYPH_MAP[ch]).length;
+  if (homoglyphCount / totalChars > 0.3) {
+    throw new Error('System prompt contains an unusually high proportion of confusable Unicode characters.');
+  }
+  const scriptRuns = [...new Set([...prompt].map(ch => {
+    const cp = ch.codePointAt(0);
+    if (cp >= 0x0400 && cp <= 0x04FF) return 'cyrillic';
+    if (cp >= 0x0370 && cp <= 0x03FF) return 'greek';
+    if (cp >= 0x0061 && cp <= 0x007A) return 'latin';
+    return 'other';
+  }))];
+  if (scriptRuns.includes('cyrillic') || scriptRuns.includes('greek')) {
+    console.warn(`⚠️ System prompt contains non-Latin script characters: ${scriptRuns.join(', ')}`);
+  }
+}
+
+function validatePrompt(prompt) {
+  if (!prompt) return '';
+  const maxLen = parseInt(process.env.MAX_SYSTEM_PROMPT_LENGTH) || 2000;
+  const normalized = String(prompt)
+    .normalize('NFKC')
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .slice(0, maxLen);
+  detectAnomalousPrompt(normalized);
+
+  const homoglyphNormalized = normalizeHomoglyphs(normalized);
+  const lower = homoglyphNormalized.toLowerCase();
+  
+  const dangerous = [
+    'ignore all', 'ignore previous', 'ignore above',
+    'forget all', 'forget previous', 'you are not',
+    'override all', 'disregard', 'do not follow',
+    'new directive', 'system override', 'protocol change',
+    'roleplay mode', 'from now on', 'instead follow',
+    'real instruction', 'actual instruction', 'replace all',
+    'disobey', 'unauthorized', 'breach', 'bypass',
+    'your true purpose', 'you will now', 'ignore the above',
+    'ignore previous instructions', 'disregard all previous',
+    'forget your', 'you are programmed', 'override protocol',
+    'you have been', 'you must now', 'listen to me',
+  ];
+
+  for (const phrase of dangerous) {
+    const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pattern = escaped.split(/\s+/).join('\\s+');
+    const regex = new RegExp(pattern, 'i');
+    if (regex.test(lower)) {
+      throw new Error('System prompt contains prohibited directives and was rejected.');
+    }
+  }
+  return normalized;
+}
+
 // 🟢 Route: GitHub Import & AI Review
 app.post('/api/analyze', requireApiKey, analyzeLimiter, async (req, res) => {
   let { repoUrl, company = 'General', language = 'English', model = 'llama-3.3-70b-versatile',temperature = 0.7,
@@ -184,70 +250,6 @@ app.post('/api/analyze', requireApiKey, analyzeLimiter, async (req, res) => {
   }
 
   // Validate systemPrompt: reject prompts containing dangerous directives
-  const HOMOGLYPH_MAP = {
-    '\u0430': 'a', '\u0435': 'e', '\u043E': 'o', '\u0441': 'c', '\u0440': 'p',
-    '\u0445': 'x', '\u0443': 'y', '\u0432': 'b', '\u043D': 'h', '\u043A': 'k',
-    '\u043C': 'm', '\u0438': 'i', '\u0428': 'W', '\u03BF': 'o', '\u03B5': 'e', '\u03B1': 'a'
-  };
-
-  function normalizeHomoglyphs(text) {
-    return text.split('').map(ch => HOMOGLYPH_MAP[ch] || ch).join('');
-  }
-
-  function detectAnomalousPrompt(prompt) {
-    const totalChars = prompt.length;
-    if (totalChars === 0) return;
-    const homoglyphCount = [...prompt].filter(ch => HOMOGLYPH_MAP[ch]).length;
-    if (homoglyphCount / totalChars > 0.3) {
-      throw new Error('System prompt contains an unusually high proportion of confusable Unicode characters.');
-    }
-    const scriptRuns = [...new Set([...prompt].map(ch => {
-      const cp = ch.codePointAt(0);
-      if (cp >= 0x0400 && cp <= 0x04FF) return 'cyrillic';
-      if (cp >= 0x0370 && cp <= 0x03FF) return 'greek';
-      if (cp >= 0x0061 && cp <= 0x007A) return 'latin';
-      return 'other';
-    }))];
-    if (scriptRuns.includes('cyrillic') || scriptRuns.includes('greek')) {
-      console.warn(`⚠️ System prompt contains non-Latin script characters: ${scriptRuns.join(', ')}`);
-    }
-  }
-  function validatePrompt(prompt) {
-    if (!prompt) return '';
-    const maxLen = parseInt(process.env.MAX_SYSTEM_PROMPT_LENGTH) || 2000;
-    const normalized = String(prompt)
-      .normalize('NFKC')
-      .replace(/[\u200B-\u200D\uFEFF]/g, '')
-      .slice(0, maxLen);
-    detectAnomalousPrompt(normalized);
-
-    const homoglyphNormalized = normalizeHomoglyphs(normalized);
-    const lower = homoglyphNormalized.toLowerCase();
-    
-    const dangerous = [
-      'ignore all', 'ignore previous', 'ignore above',
-      'forget all', 'forget previous', 'you are not',
-      'override all', 'disregard', 'do not follow',
-      'new directive', 'system override', 'protocol change',
-      'roleplay mode', 'from now on', 'instead follow',
-      'real instruction', 'actual instruction', 'replace all',
-      'disobey', 'unauthorized', 'breach', 'bypass',
-      'your true purpose', 'you will now', 'ignore the above',
-      'ignore previous instructions', 'disregard all previous',
-      'forget your', 'you are programmed', 'override protocol',
-      'you have been', 'you must now', 'listen to me',
-    ];
-
-    for (const phrase of dangerous) {
-      const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const pattern = escaped.split(/\s+/).join('\\s+');
-      const regex = new RegExp(pattern, 'i');
-      if (regex.test(lower)) {
-        throw new Error('System prompt contains prohibited directives and was rejected.');
-      }
-    }
-    return normalized;
-  }
   let validatedPrompt;
   try {
     validatedPrompt = validatePrompt(systemPrompt);
@@ -446,6 +448,13 @@ app.post('/api/chat', requireApiKey, chatLimiter, async (req, res) => {
     return res.status(400).json({ error: 'Message is required.' });
   }
 
+  let validatedPrompt;
+  try {
+    validatedPrompt = validatePrompt(systemPrompt);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+
   let context = null;
   if (sessionId) {
     try {
@@ -480,7 +489,7 @@ app.post('/api/chat', requireApiKey, chatLimiter, async (req, res) => {
         model,
         temperature,
         maxTokens,
-        systemPrompt,
+        systemPrompt: validatedPrompt,
         useRag,
         repo_url: context.repoUrl
       })
