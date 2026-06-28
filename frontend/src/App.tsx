@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import SidebarLayout from './layouts/SidebarLayout';
 import Dashboard from './pages/Dashboard';
 
+
 export default function App() {
     return (
         <BrowserRouter>
@@ -14,6 +15,7 @@ export default function App() {
 
                     {/* The new Analytics Dashboard Route */}
                     <Route path="/dashboard" element={<Dashboard />} />
+                    <Route path="*" element={<Navigate to="/dashboard" replace />} />
 
                 </Route>
             </Routes>
