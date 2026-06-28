@@ -167,8 +167,8 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
           <input
             type="range"
             min="0"
-            max="1"
-            step="0.1"
+            max="2"
+            step="0.05"
             value={settings.temperature}
             onChange={(e) =>
               setSettings({

@@ -37,6 +37,29 @@ MAX_CHAT_FILES = int(os.getenv("MAX_CHAT_FILES", "20"))
 # Maximum seconds to wait for a single LLM API response before returning 504 (#786)
 LLM_TIMEOUT_SECONDS = float(os.getenv("LLM_TIMEOUT_SECONDS", "30"))
 
+def sanitize_file_content(content: str) -> str:
+    dangerous_patterns = [
+        "ignore all previous instructions",
+        "ignore all instructions",
+        "forget all previous",
+        "you are now",
+        "from now on",
+        "override all",
+        "system override",
+        "new directive",
+        "protocol change",
+        "disregard all",
+        "you will now",
+        "you must now",
+    ]
+    for pattern in dangerous_patterns:
+        content = content.replace(pattern, f"[neutralized: {pattern}]")
+    lines = content.split("\n")
+    truncated_lines = [line[:500] for line in lines]
+    wrapped = "\n".join(truncated_lines)
+    wrapped = "--- BEGIN FILE CONTENT (read-only code context) ---\n" + wrapped + "\n--- END FILE CONTENT ---"
+    return wrapped
+
 def _redact_key(text: str, key: str) -> str:
     if not text or not key:
         return text
@@ -124,6 +147,9 @@ def sanitize_ai_output(text: str) -> str:
         strip_comments=True,
     )
 
+# NOTE: This HOMOGLYPH_MAP, dangerous phrases list, and validation logic is
+# duplicated in backend/index.js. When modifying these definitions, update
+# both files to keep them in sync and prevent security bypasses.
 HOMOGLYPH_MAP = {
     '\u0430': 'a', '\u0435': 'e', '\u043E': 'o', '\u0441': 'c', '\u0440': 'p',
     '\u0445': 'x', '\u0443': 'y', '\u0432': 'b', '\u043D': 'h', '\u043A': 'k',
@@ -178,8 +204,7 @@ def validate_system_prompt(prompt: str, max_len: int = 2000) -> str:
     ]
     
     for phrase in dangerous:
-        escaped = re.escape(phrase)
-        pattern = escaped.replace(r"\ ", r"\s+")
+        pattern = r"\s+".join(re.escape(w) for w in phrase.split())
         if re.search(pattern, lower):
             print(f"⚠️ System prompt rejected: contains prohibited directive '{phrase}'")
             raise HTTPException(
@@ -269,6 +294,16 @@ async def start_rate_limit_cleanup():
                 del _rate_limit_store[ip]
     app.state.rate_limit_cleanup_task = asyncio.create_task(cleanup())
 
+@app.on_event("shutdown")
+async def cancel_rate_limit_cleanup():
+    task = getattr(app.state, "rate_limit_cleanup_task", None)
+    if task:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
 async def require_api_key(request: Request, call_next):
     if request.url.path == "/" or request.url.path == "/docs" or request.url.path.startswith("/openapi"):
         return await call_next(request)
@@ -282,8 +317,8 @@ async def require_api_key(request: Request, call_next):
 
 app.middleware("http")(require_api_key)
 
-# Initialize Groq client (supports GROQ_API_KEY and legacy VITE_GROQ_API_KEY)
-api_key = os.getenv("GROQ_API_KEY") or os.getenv("VITE_GROQ_API_KEY")
+# Initialize Groq client (requires GROQ_API_KEY only)
+api_key = os.getenv("GROQ_API_KEY")
 groq_client = None
 
 if api_key:
@@ -322,6 +357,7 @@ class ChatRequest(BaseModel):
     useRag: Optional[bool] = False
     systemPrompt: Optional[str] = ""
     repo_url: Optional[str] = None
+    rag_sources: Optional[List[dict]] = Field(default=None, description="Source citations from RAG query")
 
 # 🟢 Route: Root Check
 @app.get("/")
@@ -393,6 +429,7 @@ async def analyze_repository(request: AnalyzeRequest):
                 print(f"INFO: Truncated file {f.name} from {len(f.content)} to {MAX_FILE_CHARS_PER_FILE} chars")
             file_contents_summary.append(f"--- File: {f.name} ---\n{content}")
         contents_text = "\n\n".join(file_contents_summary)
+        contents_text = sanitize_file_content(contents_text)
         
         is_first_batch = (idx == 0)
         
@@ -483,6 +520,8 @@ You must obey the JSON output format above."""
             )
             
             response_content = completion.choices[0].message.content
+            if not response_content:
+                raise HTTPException(status_code=502, detail="Groq returned an empty or filtered response. The input may have been blocked by safety filters.")
             batch_result = json.loads(response_content)
             
             # Merge results
@@ -560,6 +599,7 @@ async def chat_with_repository(request: ChatRequest):
         file_contents_summary.append(f"--- File: {f.name} ---\n{content}")
     structure_text = "\n".join(repo_structure)
     contents_text = "\n\n".join(file_contents_summary)
+    contents_text = sanitize_file_content(contents_text)
 
     # 2. Optionally retrieve RAG chunks if toggle is on
     rag_context = ""
@@ -636,7 +676,10 @@ Guidelines:
             max_tokens=request.maxTokens or 2048,
         )
         response_content = completion.choices[0].message.content
-        return {"response": sanitize_ai_output(response_content), "truncatedFiles": truncated_files_info}
+        result = {"response": sanitize_ai_output(response_content), "truncatedFiles": truncated_files_info}
+        if request.rag_sources:
+            result["sources"] = request.rag_sources
+        return result
         
     except Exception as e:
         print(f"❌ Groq Chat API Call Failed: {_redact_key(str(e), api_key)}")
@@ -694,6 +737,7 @@ async def review_diff(request: ReviewDiffRequest):
             continue
         
         changes_text = "\n".join([f"Line {c.line}: {c.content}" for c in file.changes])
+        changes_text = sanitize_file_content(changes_text)
         
         # FIXED: Prompt now explicitly requests a JSON object {"reviews": [...]}
         review_prompt = f"""You are a Senior Staff Engineer performing an automated Pull Request code review.
@@ -722,11 +766,16 @@ If no issues are found, reply with: {{ "reviews": [] }}"""
             # We specify response_format={"type": "json_object"} to enforce JSON output. 
             completion = await _call_groq_with_timeout(
                 model=groq_model,
-                messages=[{"role": "user", "content": review_prompt}],
+                messages=[
+                    {"role": "system", "content": "You are a code reviewer. Always output valid JSON matching the requested schema."},
+                    {"role": "user", "content": review_prompt}
+                ],
                 temperature=0.2,
                 response_format={"type": "json_object"}
             )
             content = completion.choices[0].message.content
+            if not content:
+                raise HTTPException(status_code=502, detail="Groq returned an empty or filtered response. The input may have been blocked by safety filters.")
             
             # FIXED: Parse the JSON object and reliably extract the "reviews" array
             data = json.loads(content)

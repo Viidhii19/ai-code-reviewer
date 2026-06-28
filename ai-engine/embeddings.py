@@ -18,6 +18,7 @@ _MAX_CACHE_SIZE = int(os.getenv("MAX_EMBEDDING_CACHE_SIZE", "10000"))
 _cache_enabled = os.getenv("EMBEDDING_CACHE_ENABLED", "true").lower() == "true"
 _embedding_cache = collections.OrderedDict()
 _cache_lock = threading.Lock()
+_embedding_dimension = None
 
 
 def _compute_content_hash(content: str) -> str:
@@ -85,7 +86,10 @@ def _get_model():
 
 
 def get_embedding_dimension() -> int:
-    return _get_model().get_sentence_embedding_dimension()
+    global _embedding_dimension
+    if _embedding_dimension is None:
+        _embedding_dimension = _get_model().get_sentence_embedding_dimension()
+    return _embedding_dimension
 
 
 def embed_text(text: str) -> list[float]:
@@ -111,6 +115,9 @@ def get_or_compute_embedding(file_path: str, content: str) -> list[float]:
             return cached["embedding"]
     embedding = embed_text(content)
     with _cache_lock:
+        cached = _embedding_cache.get(file_path)
+        if cached is not None and cached["content_hash"] == content_hash:
+            return cached["embedding"]
         _embedding_cache[file_path] = {"content_hash": content_hash, "embedding": embedding}
         _embedding_cache.move_to_end(file_path)
         if len(_embedding_cache) > _MAX_CACHE_SIZE:

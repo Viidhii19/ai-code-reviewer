@@ -3,6 +3,7 @@ import { useDebounce } from '../hooks/useDebounce';
 import { useStore, ChatMessage } from '../store/useStore';
 import SettingsModal from "../components/SettingsModal";
 import { MetricsChart } from '../components/MetricsChart';
+import { VulnerabilitiesBarChart } from '../components/VulnerabilitiesBarChart';
 import CopyToClipboardButton from "../components/CopyToClipboardButton";
 import {
   Terminal,
@@ -92,6 +93,7 @@ export interface BackendResponse {
   sessionId?: string;
   sessionPersisted?: boolean;
   _mock?: boolean;
+  warnings?: Array<{ file: string; warning: string }>;
 }
 
 interface AuditHistoryEntry {
@@ -636,10 +638,11 @@ export default function Dashboard() {
       }
 
       const data = await response.json();
+      const sources = data.sources || [];
       setChatHistory((prev) => {
         const updated = truncateChatHistory([
           ...prev,
-          { role: "assistant" as const, content: data.response },
+          { role: "assistant" as const, content: data.response, sources: sources.length > 0 ? sources : undefined },
         ]);
         try { localStorage.setItem(CHAT_HISTORY_KEY, JSON.stringify(updated)); } catch {}
         return updated;
@@ -1790,6 +1793,35 @@ export default function Dashboard() {
                   </span>
                 </div>
               )}
+              {analysisResult.warnings && analysisResult.warnings.length > 0 && (
+                <div
+                  style={{
+                    background: "rgba(239,68,68,0.1)",
+                    border: "1px solid rgba(239,68,68,0.35)",
+                    borderRadius: "8px",
+                    padding: "12px 16px",
+                    color: "#fca5a5",
+                    fontSize: "13px",
+                    fontWeight: 600,
+                    display: "flex",
+                    alignItems: "flex-start",
+                    gap: "8px",
+                    flexDirection: "column",
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                    <ShieldAlert size={16} style={{ color: "#ef4444" }} />
+                    <span>Potential prompt injection detected in repository files</span>
+                  </div>
+                  <ul style={{ margin: 0, paddingLeft: "24px", fontSize: "11px", fontWeight: 400 }}>
+                    {analysisResult.warnings.map((w, i) => (
+                      <li key={i}>
+                        <strong>{w.file}</strong>: {w.warning}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               {/* Dashboard View Selection Tabs & Export Controls */}
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px", flexWrap: "wrap", width: "100%" }}>
                 <div style={{ display: "flex", gap: "10px" }}>
@@ -2133,6 +2165,17 @@ export default function Dashboard() {
                         boxSizing: "border-box",
                       }}
                     >
+                      {analysisResult && (() => {
+                        const fileReviews = analysisResult.analysis.fileReviews || {};
+                        const breakdown: Record<string, number> = { bugs: 0, security: 0, optimization: 0, styling: 0 };
+                        Object.values(fileReviews).forEach((fr: any) => {
+                          breakdown.bugs += fr.bugs?.length || 0;
+                          breakdown.security += fr.security?.length || 0;
+                          breakdown.optimization += fr.optimization?.length || 0;
+                          breakdown.styling += fr.styling?.length || 0;
+                        });
+                        return <div style={{ marginBottom: "16px" }}><VulnerabilitiesBarChart data={breakdown} /></div>;
+                      })()}
                       <div
                         style={{
                           borderBottom: "1px solid rgba(255,255,255,0.08)",
@@ -3614,6 +3657,16 @@ export default function Dashboard() {
                             >
                               {msg.content}
                             </div>
+                            {msg.role === "assistant" && msg.sources && msg.sources.length > 0 && (
+                              <div style={{ display: "flex", flexWrap: "wrap", gap: "4px", marginTop: "6px", borderTop: "1px solid rgba(255,255,255,0.06)", paddingTop: "6px" }}>
+                                {msg.sources.map((source, sIdx) => (
+                                  <span key={sIdx} style={{ display: "inline-flex", alignItems: "center", gap: "3px", fontSize: "10px", background: "rgba(59,130,246,0.1)", border: "1px solid rgba(59,130,246,0.2)", borderRadius: "4px", padding: "2px 6px", color: "#60a5fa" }}>
+                                    <FileCode size={10} />
+                                    {source.file}{source.line > 0 ? `:${source.line}` : ""}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
                           </div>
                         ))
                       )}
