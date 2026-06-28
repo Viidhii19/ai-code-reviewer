@@ -84,11 +84,12 @@ export function scanSecrets(fileContent) {
   const findings = [];
   const lines = fileContent.split('\n');
   const startTime = Date.now();
-  lines.forEach((line, idx) => {
-    if (Date.now() - startTime > SCAN_TIMEOUT_MS) return;
-    if (line.length > MAX_LINE_LENGTH) return;
-    rules.forEach(rule => {
-      if (Date.now() - startTime > SCAN_TIMEOUT_MS) return;
+  for (let idx = 0; idx < lines.length; idx++) {
+    if (Date.now() - startTime > SCAN_TIMEOUT_MS) break;
+    const line = lines[idx];
+    if (line.length > MAX_LINE_LENGTH) continue;
+    for (const rule of rules) {
+      if (Date.now() - startTime > SCAN_TIMEOUT_MS) break;
       rule.regex.lastIndex = 0;
       let match;
       while ((match = rule.regex.exec(line)) !== null) {
@@ -103,8 +104,8 @@ export function scanSecrets(fileContent) {
           rule.regex.lastIndex++;
         }
       }
-    });
-  });
+    }
+  }
 
   return findings;
 }
