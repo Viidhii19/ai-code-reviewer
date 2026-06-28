@@ -246,32 +246,6 @@ function cleanupTimers() {
   clearInterval(cacheMetricsTimer);
 }
 
-// Content-Type validation middleware for POST endpoints
-function requireJsonContentType(req, res, next) {
-  if (!req.is('application/json')) {
-    return res.status(415).json({ error: 'Content-Type must be application/json' });
-  }
-  next();
-}
-
-// 🟢 Route: GitHub Import & AI Review
-app.post('/api/analyze', requireApiKey, requireJsonContentType, analyzeLimiter, async (req, res) => {
-  let { repoUrl, company = 'General', language = 'English', model = 'llama-3.3-70b-versatile',temperature = 0.7,
-     maxTokens = 2048, systemPrompt = '', batchSize = 5
-   } = req.body;
-
-  // Enforce boundary limits for batchSize to prevent downstream parsing crashes
-  batchSize = Math.max(1, Math.min(20, parseInt(batchSize, 10) || 5));
-
-  if (!repoUrl) {
-    return res.status(400).json({ error: 'GitHub Repository URL is required.' });
-  }
-
-  if (!isValidRepoUrl(repoUrl)) {
-    return res.status(400).json({ error: 'Invalid GitHub repository URL. Only https://github.com/owner/repo URLs are allowed.' });
-  }
-
-  // Validate systemPrompt: reject prompts containing dangerous directives
   const HOMOGLYPH_MAP = {
     '\u0430': 'a', '\u0435': 'e', '\u043E': 'o', '\u0441': 'c', '\u0440': 'p',
     '\u0445': 'x', '\u0443': 'y', '\u0432': 'b', '\u043D': 'h', '\u043A': 'k',
@@ -340,6 +314,33 @@ app.post('/api/analyze', requireApiKey, requireJsonContentType, analyzeLimiter, 
     }
     return normalized;
   }
+
+// Content-Type validation middleware for POST endpoints
+function requireJsonContentType(req, res, next) {
+  if (!req.is('application/json')) {
+    return res.status(415).json({ error: 'Content-Type must be application/json' });
+  }
+  next();
+}
+
+// 🟢 Route: GitHub Import & AI Review
+app.post('/api/analyze', requireApiKey, requireJsonContentType, analyzeLimiter, async (req, res) => {
+  let { repoUrl, company = 'General', language = 'English', model = 'llama-3.3-70b-versatile',temperature = 0.7,
+     maxTokens = 2048, systemPrompt = '', batchSize = 5
+   } = req.body;
+
+  // Enforce boundary limits for batchSize to prevent downstream parsing crashes
+  batchSize = Math.max(1, Math.min(20, parseInt(batchSize, 10) || 5));
+
+  if (!repoUrl) {
+    return res.status(400).json({ error: 'GitHub Repository URL is required.' });
+  }
+
+  if (!isValidRepoUrl(repoUrl)) {
+    return res.status(400).json({ error: 'Invalid GitHub repository URL. Only https://github.com/owner/repo URLs are allowed.' });
+  }
+
+  // Validate systemPrompt: reject prompts containing dangerous directives
   let validatedPrompt;
   try {
     validatedPrompt = validatePrompt(systemPrompt);
@@ -571,6 +572,13 @@ app.post('/api/chat', requireApiKey, requireJsonContentType, chatLimiter, async 
     return res.status(400).json({ error: 'Message is required.' });
   }
 
+  let validatedPrompt;
+  try {
+    validatedPrompt = validatePrompt(systemPrompt);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+
   // Verify session ownership before entering the queue (issue #742).
   // Only the client that created the session may access it.
   if (sessionId) {
@@ -633,7 +641,7 @@ app.post('/api/chat', requireApiKey, requireJsonContentType, chatLimiter, async 
             model,
             temperature,
             maxTokens,
-            systemPrompt,
+            systemPrompt: validatedPrompt,
             useRag,
             repo_url: context.repoUrl
           })
