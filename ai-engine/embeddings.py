@@ -111,6 +111,9 @@ def get_or_compute_embedding(file_path: str, content: str) -> list[float]:
             return cached["embedding"]
     embedding = embed_text(content)
     with _cache_lock:
+        cached = _embedding_cache.get(file_path)
+        if cached is not None and cached["content_hash"] == content_hash:
+            return cached["embedding"]
         _embedding_cache[file_path] = {"content_hash": content_hash, "embedding": embedding}
         _embedding_cache.move_to_end(file_path)
         if len(_embedding_cache) > _MAX_CACHE_SIZE:
