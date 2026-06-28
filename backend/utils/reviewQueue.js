@@ -39,7 +39,9 @@ class ReviewQueue {
       this._queues.delete(key);
       this._locks.delete(key);
     });
-    this._locks.set(key, next.catch(() => {}));
+    this._locks.set(key, next.catch(err => {
+      console.error(`ReviewQueue processing error for "${key}":`, err);
+    }));
     return next;
   }
 
@@ -56,7 +58,9 @@ class ReviewQueue {
         this._locks.delete(key);
       }
     });
-    this._locks.set(key, next.catch(() => {}));
+    this._locks.set(key, next.catch(err => {
+      console.error(`ReviewQueue exclusive processing error for "${key}":`, err);
+    }));
     return next;
   }
 }
