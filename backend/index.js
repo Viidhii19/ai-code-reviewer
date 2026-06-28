@@ -889,7 +889,7 @@ async function runWebhookReview(owner, repo, pullNumber, headSha) {
   }
 
   // 2. Parse files and changes
-  const parsedFiles = parseDiff(diff);
+  const { files: parsedFiles, binaryFiles: parsedBinaryFiles } = parseDiff(diff);
   console.log(`📁 Found ${parsedFiles.length} files in PR diff.`);
 
   const commentsToPost = [];
