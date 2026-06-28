@@ -189,7 +189,7 @@ function csrfProtection(req, res, next) {
     // Remove old token and rotate
     csrfTokenStore.delete(headerToken);
     const newToken = generateCsrfToken();
-    const csrfCookie = `${CSRF_COOKIE_NAME}=${newToken}; HttpOnly=false; SameSite=Strict; Path=/`;
+    const csrfCookie = `${CSRF_COOKIE_NAME}=${newToken}; SameSite=Strict; Path=/`;
     const secureFlag = process.env.NODE_ENV === 'production' ? '; Secure' : '';
     const existingCookies = res.getHeader('Set-Cookie') || [];
     const cookies = Array.isArray(existingCookies) ? existingCookies : [existingCookies];
@@ -208,7 +208,7 @@ app.post('/api/session', requireApiKey, (req, res) => {
   if (!sessionCookie) return;
 
   const csrfToken = generateCsrfToken();
-  const csrfCookie = `${CSRF_COOKIE_NAME}=${csrfToken}; HttpOnly=false; SameSite=Strict; Path=/`;
+  const csrfCookie = `${CSRF_COOKIE_NAME}=${csrfToken}; SameSite=Strict; Path=/`;
   const secureFlag = process.env.NODE_ENV === 'production' ? '; Secure' : '';
   res.setHeader('Set-Cookie', [sessionCookie, csrfCookie + secureFlag]);
   return res.json({ success: true, csrfToken });
