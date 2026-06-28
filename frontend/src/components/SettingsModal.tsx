@@ -43,7 +43,15 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
     previousFocusRef.current = document.activeElement as HTMLElement;
     const saved = localStorage.getItem("reposage_ai_settings");
     if (saved) {
-      setSettings(JSON.parse(saved));
+      try {
+        const parsed = JSON.parse(saved);
+        if (parsed && typeof parsed === "object") {
+          setSettings({ ...DEFAULT_SETTINGS, ...parsed });
+        }
+      } catch (error) {
+        console.warn("Invalid saved AI settings; using defaults.", error);
+        setSettings(DEFAULT_SETTINGS);
+      }
     }
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {

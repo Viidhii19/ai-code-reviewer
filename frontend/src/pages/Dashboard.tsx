@@ -29,6 +29,7 @@ import {
 import { handleMarkdownExport, handleHtmlExport } from "../utils/exportUtils";
 import mermaid from "mermaid";
 import { sanitizeMermaidOutput } from "../utils/sanitize";
+import { apiFetch } from "../utils/api";
 
 // Initialize Mermaid outside the component to avoid multiple initializations
 try {
@@ -49,7 +50,17 @@ try {
   console.error("Failed to initialize Mermaid:", e);
 }
 
-import { apiFetch } from '../utils/api';
+const getSavedAiSettings = () => {
+  try {
+    const saved = JSON.parse(
+      localStorage.getItem("reposage_ai_settings") || "{}"
+    );
+    return saved && typeof saved === "object" ? saved : {};
+  } catch (error) {
+    console.warn("Invalid saved AI settings; using defaults.", error);
+    return {};
+  }
+};
 
 // Define Types
 export interface ReviewItem {
@@ -605,9 +616,7 @@ export default function Dashboard() {
     setIsChatLoading(true);
 
     try {
-      const chatAiSettings = JSON.parse(
-        localStorage.getItem("reposage_ai_settings") || "{}"
-      );
+      const chatAiSettings = getSavedAiSettings();
       const response = await apiFetch("/api/chat", {
         method: "POST",
         body: JSON.stringify({
@@ -809,16 +818,8 @@ export default function Dashboard() {
         setLoadingStep(steps[currentStep]);
       }
     }, 1200);
-    let aiSettings: { temperature?: number; maxTokens?: number; systemPrompt?: string } = {};
     try {
-      aiSettings = JSON.parse(
-        localStorage.getItem("reposage_ai_settings") || "{}"
-      );
-    } catch {
-      aiSettings = {};
-    }
-
-    try {
+      const aiSettings = getSavedAiSettings();
       const response = await apiFetch("/api/analyze", {
         method: "POST",
         body: JSON.stringify({
