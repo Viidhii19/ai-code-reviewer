@@ -282,8 +282,8 @@ async def require_api_key(request: Request, call_next):
 
 app.middleware("http")(require_api_key)
 
-# Initialize Groq client (supports GROQ_API_KEY and legacy VITE_GROQ_API_KEY)
-api_key = os.getenv("GROQ_API_KEY") or os.getenv("VITE_GROQ_API_KEY")
+# Initialize Groq client (requires GROQ_API_KEY only)
+api_key = os.getenv("GROQ_API_KEY")
 groq_client = None
 
 if api_key:
