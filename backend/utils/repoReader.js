@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url';
 import simpleGit from 'simple-git';
 import { isValidRepoUrl } from './urlValidator.js';
 import { loadIgnorePatterns, isIgnored } from './ignoreHelper.js';
+import { HARD_SKIP_DIRS } from './skipConstants.js';
 import { deleteFolderRecursive } from './fileHelper.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -20,8 +21,7 @@ const DEFAULT_MAX_DEPTH = 10;
 const DEFAULT_MAX_BYTES = 1024 * 1024; // 1 MB per file
 const DEFAULT_CLONE_TIMEOUT_MS = 120000;
 
-// Directories always skipped (same as ignoreHelper.js#readFilesRecursively).
-const HARD_SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.venv', '__pycache__']);
+// Directories always skipped (shared with ignoreHelper.js#readFilesRecursively).
 
 // Map file extension → language label, used by downstream chunkers.
 // Mirrors the language map in ai-engine/text_splitter.py:20-33.

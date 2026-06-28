@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { HARD_SKIP_DIRS } from './skipConstants.js';
 
 // 🟢 Helper to load .reposageignore patterns from a directory
 export function loadIgnorePatterns(dir) {
@@ -66,8 +67,8 @@ export function readFilesRecursively(dir, fileList = [], baseDir = dir, ignorePa
     // Skip symlinks to avoid circular reference DoS
     if (stat.isSymbolicLink()) continue;
 
-    // Skip node_modules, git directories, and build artifacts
-    if (file === 'node_modules' || file === '.git' || file === 'dist' || file === 'build') {
+    // Skip directories that should never be analyzed
+    if (HARD_SKIP_DIRS.has(file)) {
       continue;
     }
 
