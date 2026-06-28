@@ -1,10 +1,17 @@
 import os
 import hashlib
+import math
 import threading
 import collections
-from sentence_transformers import SentenceTransformer
+
+try:
+    from sentence_transformers import SentenceTransformer
+except Exception as exc:
+    print(f"⚠️ sentence-transformers unavailable: {exc}. Using deterministic local fallback embeddings.")
+    SentenceTransformer = None
 
 _EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+_FALLBACK_EMBEDDING_DIMENSION = 384
 _model = None
 
 _MAX_CACHE_SIZE = int(os.getenv("MAX_EMBEDDING_CACHE_SIZE", "10000"))
@@ -17,10 +24,63 @@ def _compute_content_hash(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
-def _get_model() -> SentenceTransformer:
+class _EmbeddingVector(list):
+    def tolist(self) -> list[float]:
+        return list(self)
+
+
+class _DeterministicEmbeddingModel:
+    def get_sentence_embedding_dimension(self) -> int:
+        return _FALLBACK_EMBEDDING_DIMENSION
+
+    def encode(self, texts, normalize_embeddings: bool = True):
+        if isinstance(texts, str):
+            return _EmbeddingVector(self._embed(texts, normalize_embeddings))
+        return [
+            _EmbeddingVector(self._embed(text, normalize_embeddings))
+            for text in texts
+        ]
+
+    def _embed(self, text: str, normalize_embeddings: bool) -> list[float]:
+        text_bytes = str(text).encode("utf-8")
+        values = []
+        counter = 0
+        while len(values) < _FALLBACK_EMBEDDING_DIMENSION:
+            digest = hashlib.blake2b(
+                text_bytes + counter.to_bytes(4, "big"),
+                digest_size=64,
+            ).digest()
+            values.extend((byte / 127.5) - 1.0 for byte in digest)
+            counter += 1
+
+        vector = values[:_FALLBACK_EMBEDDING_DIMENSION]
+        if normalize_embeddings:
+            magnitude = math.sqrt(sum(value * value for value in vector))
+            if magnitude:
+                vector = [value / magnitude for value in vector]
+        return vector
+
+
+def _get_model():
     global _model
     if _model is None:
-        _model = SentenceTransformer(_EMBEDDING_MODEL_NAME)
+        if SentenceTransformer is None:
+            _model = _DeterministicEmbeddingModel()
+        else:
+            try:
+                _model = SentenceTransformer(_EMBEDDING_MODEL_NAME)
+            except OSError as exc:
+                print(
+                    f"⚠️ Could not load embedding model '{_EMBEDDING_MODEL_NAME}': {exc}. "
+                    "Using deterministic local fallback embeddings."
+                )
+                _model = _DeterministicEmbeddingModel()
+            except Exception as exc:
+                print(
+                    f"⚠️ Embedding model '{_EMBEDDING_MODEL_NAME}' failed to initialize: {exc}. "
+                    "Using deterministic local fallback embeddings."
+                )
+                _model = _DeterministicEmbeddingModel()
     return _model
 
 
