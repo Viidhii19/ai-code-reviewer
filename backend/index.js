@@ -59,7 +59,7 @@ if (trustProxy) {
 // leftmost (client-controlled) value, allowing IP spoofing to bypass rate limits.
 
 // Enable CORS with explicit origin
-const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'http://localhost:3000,http://localhost:5173').split(',');
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'http://localhost:3000,http://localhost:5173').split(',').map(s => s.trim());
 app.use(cors({
   origin: ALLOWED_ORIGINS,
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
@@ -331,6 +331,15 @@ app.post('/api/analyze', requireApiKey, requireJsonContentType, analyzeLimiter, 
 
   // Enforce boundary limits for batchSize to prevent downstream parsing crashes
   batchSize = Math.max(1, Math.min(20, parseInt(batchSize, 10) || 5));
+
+  temperature = Math.max(0, Math.min(2, parseFloat(temperature) || 0.7));
+
+  maxTokens = Math.max(1, Math.min(128000, parseInt(maxTokens, 10) || 2048));
+
+  const ALLOWED_ANALYSIS_MODELS = ["llama-3.3-70b-versatile", "deepseek-r1-distill-llama-70b", "llama-3.1-8b-instant", "gemma2-9b-it"];
+  if (!ALLOWED_ANALYSIS_MODELS.includes(model)) {
+    model = "llama-3.3-70b-versatile";
+  }
 
   if (!repoUrl) {
     return res.status(400).json({ error: 'GitHub Repository URL is required.' });
