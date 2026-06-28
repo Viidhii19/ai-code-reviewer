@@ -81,22 +81,7 @@ export const requireApiKey = (req, res, next) => {
   const sessionSecret = getSessionSecret();
 
   if (hasValidSessionCookie(req, sessionSecret)) {
-    const cookieValue = getCookie(req, SESSION_COOKIE_NAME);
-    if (cookieValue) {
-      const [payload] = cookieValue.split('.');
-      if (payload) {
-        try {
-          const session = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
-          req.clientId = session.uid || 'anonymous';
-        } catch {
-          req.clientId = 'anonymous';
-        }
-      } else {
-        req.clientId = 'anonymous';
-      }
-    } else {
-      req.clientId = 'anonymous';
-    }
+    req.clientId = crypto.createHash('sha256').update(validKey).digest('hex');
     next();
     return;
   }
