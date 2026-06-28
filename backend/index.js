@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import cookieParser from 'cookie-parser';
 import PDFDocument from 'pdfkit';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
@@ -20,11 +21,13 @@ import { parseDiff } from './utils/diffParser.js';
 import { analyzeComplexity } from './utils/complexityAnalyzer.js';
 import { deleteFolderRecursive, getFolderSize } from './utils/fileHelper.js';
 import { verifyWebhookSignature } from './utils/signatureVerifier.js';
+import ReviewQueue from './utils/reviewQueue.js';
 import { verifyPort } from './utils/envVerifier.js';
 import { mockAIReview } from './utils/mockAIReview.js';
+import AnalysisCache from './utils/analysisCache.js';
 import Analytics from './models/Analytics.js';
-import Session from './models/Session.js';
-import { connectDatabase } from './config/db.js';
+import Session, { estimateSessionSize } from './models/Session.js';
+import { connectDatabase, ensureConnection, closeDatabase } from './config/db.js';
 
 dotenv.config();
 
@@ -36,6 +39,10 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = verifyPort(process.env.PORT || 5000);
 
+// Initialize analysis cache with configurable TTL (default: 1 hour)
+const ANALYSIS_CACHE_TTL_MS = parseInt(process.env.ANALYSIS_CACHE_TTL_MINUTES || '60') * 60 * 1000;
+const analysisCache = new AnalysisCache(ANALYSIS_CACHE_TTL_MS);
+
 // Trust the first hop of reverse proxy headers (Render, Railway, Heroku, Nginx, AWS ALB, etc.)
 // so that req.ip and express-rate-limit resolve the real client IP from X-Forwarded-For
 // rather than the internal proxy address.
@@ -45,16 +52,11 @@ if (trustProxy) {
   app.set('trust proxy', 1);
 }
 
-// Helper used by rate limiters to extract the real client IP.
-// Takes the left-most address from X-Forwarded-For (the original client),
-// falling back to req.ip when the header is absent (direct connections).
-function getRealClientIp(req) {
-  const forwarded = req.headers['x-forwarded-for'];
-  if (forwarded && typeof forwarded === 'string') {
-    return forwarded.split(',')[0].trim();
-  }
-  return req.ip;
-}
+// NOTE: No custom keyGenerator is needed. With `trust proxy: 1` set above, Express
+// automatically resolves req.ip to the real client IP by stripping the known proxy
+// hop from X-Forwarded-For. express-rate-limit defaults to req.ip, which is already
+// correct. A custom function that reads X-Forwarded-For directly would trust the
+// leftmost (client-controlled) value, allowing IP spoofing to bypass rate limits.
 
 // Enable CORS with explicit origin
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'http://localhost:3000,http://localhost:5173').split(',');
@@ -78,7 +80,9 @@ const analyzeLimiter = rateLimit({
   max: 5,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: getRealClientIp,
+  // No keyGenerator: express-rate-limit defaults to req.ip, which Express has already
+  // resolved correctly via the `trust proxy` setting above. Using req.ip prevents
+  // clients from bypassing the limit by rotating fake X-Forwarded-For values.
   store: redisClient ? new RedisStore({ sendCommand: (...args) => redisClient.call(...args) }) : undefined,
   message: { error: 'Too many analyze requests. Please slow down and retry after 5 minutes.' }
 });
@@ -87,10 +91,22 @@ const chatLimiter = rateLimit({
   max: 30,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: getRealClientIp,
+  // No keyGenerator: same rationale as analyzeLimiter above.
   store: redisClient ? new RedisStore({ sendCommand: (...args) => redisClient.call(...args) }) : undefined,
   message: { error: 'Too many chat requests. Please slow down and retry after 1 minute.' }
 });
+
+const exportLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  store: redisClient ? new RedisStore({ sendCommand: (...args) => redisClient.call(...args) }) : undefined,
+  message: { error: 'Too many export requests. Please slow down and retry after 1 minute.' }
+});
+
+// Parse cookies for CSRF token validation
+app.use(cookieParser());
 
 // Capture raw body for webhook signature verification before JSON parsing
 app.use(express.json({
@@ -99,12 +115,68 @@ app.use(express.json({
   }
 }));
 
+// CSRF token endpoint: generates a random token and sets it as a non-httpOnly cookie
+// so the frontend can read it and include it in the X-CSRF-Token header.
+const CSRF_COOKIE_NAME = 'csrf-token';
+function generateCsrfToken() {
+  return crypto.randomBytes(32).toString('hex');
+}
+
+// CSRF validation middleware for state-changing methods
+function csrfProtection(req, res, next) {
+  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
+    const headerToken = req.headers['x-csrf-token'];
+    const cookieToken = req.cookies?.[CSRF_COOKIE_NAME];
+    if (!headerToken || !cookieToken) {
+      // Allow session creation and CSRF token endpoints to function
+      if (req.path === '/api/session' || req.path === '/api/csrf-token') {
+        return next();
+      }
+      // Skip CSRF for webhook (uses HMAC signature verification)
+      if (req.path === '/api/webhook') {
+        return next();
+      }
+      return res.status(403).json({ error: 'CSRF validation failed.' });
+    }
+    // Constant-time comparison to prevent timing attacks
+    const headerBuf = Buffer.from(String(headerToken));
+    const cookieBuf = Buffer.from(String(cookieToken));
+    if (headerBuf.length !== cookieBuf.length || !crypto.timingSafeEqual(headerBuf, cookieBuf)) {
+      // Allow session creation, CSRF token, and webhook endpoints even on token mismatch
+      if (req.path === '/api/session' || req.path === '/api/csrf-token') {
+        return next();
+      }
+      if (req.path === '/api/webhook') {
+        return next();
+      }
+      return res.status(403).json({ error: 'CSRF validation failed.' });
+    }
+  }
+  next();
+}
+
+// Apply CSRF protection to all state-changing routes
+app.use(csrfProtection);
+
 app.post('/api/session', requireApiKey, (req, res) => {
   const sessionCookie = createFrontendSessionCookie(res);
   if (!sessionCookie) return;
 
-  res.setHeader('Set-Cookie', sessionCookie);
-  return res.json({ success: true });
+  const csrfToken = generateCsrfToken();
+  res.setHeader('Set-Cookie', [sessionCookie, `${CSRF_COOKIE_NAME}=${csrfToken}; HttpOnly=false; SameSite=Strict; Path=/`]);
+  return res.json({ success: true, csrfToken });
+});
+
+// CSRF token retrieval for clients that need a fresh token
+app.get('/api/csrf-token', requireApiKey, (req, res) => {
+  const csrfToken = generateCsrfToken();
+  res.cookie(CSRF_COOKIE_NAME, csrfToken, {
+    httpOnly: false,
+    sameSite: 'strict',
+    secure: process.env.NODE_ENV === 'production',
+    path: '/',
+  });
+  res.json({ csrfToken });
 });
 
 // Ensure temp_repos folder exists
@@ -119,7 +191,7 @@ function cleanupTempRepos() {
     fs.rmSync(tempReposDir, { recursive: true, force: true });
   }
 }
-function onShutdown() { cleanupTempRepos(); cleanupTimers(); process.exit(0); }
+function onShutdown() { cleanupTempRepos(); cleanupTimers(); closeDatabase(); process.exit(0); }
 process.on('SIGINT', onShutdown);
 process.on('SIGTERM', onShutdown);
 
@@ -127,20 +199,26 @@ process.on('SIGTERM', onShutdown);
 // The Session collection uses a TTL index (expireAfterSeconds: 1800) so MongoDB
 // handles expiry automatically — no in-process Map or setInterval needed.
 
-// Webhook deduplication and queuing state (module scope to persist across requests)
-const reviewQueues = new Map(); // reviewKey -> latest pending review, or null while active
-const processedDeliveries = new Map();
-const DELIVERY_TTL = 60 * 60 * 1000; // 1 hour
-const MAX_DELIVERY_ENTRIES = 5000;
-
-// Evict oldest entry from a Map when over max size
-function evictLRU(map, maxSize) {
-  if (map.size <= maxSize) return;
-  const oldest = map.keys().next().value;
-  if (oldest !== undefined) map.delete(oldest);
+// Utility: fetch with configurable timeout using AbortController
+async function fetchWithTimeout(url, options = {}, timeoutMs = 120000) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    return response;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
-// Periodic cleanup of expired delivery entries with size cap
+// Webhook deduplication and queuing state (module scope to persist across requests)
+const reviewQueue = new ReviewQueue();
+const processedDeliveries = new Map();
+const reviewedShas = new Map();
+const failedReviews = new Map();
+const DELIVERY_TTL = 60 * 60 * 1000;
+const MAX_DELIVERY_ENTRIES = 5000;
+
 const dedupCleanupTimer = setInterval(() => {
   const now = Date.now();
   for (const [deliveryId, timestamp] of processedDeliveries) {
@@ -149,24 +227,35 @@ const dedupCleanupTimer = setInterval(() => {
     }
   }
   while (processedDeliveries.size > MAX_DELIVERY_ENTRIES) {
-    evictLRU(processedDeliveries, MAX_DELIVERY_ENTRIES);
+    const oldest = processedDeliveries.keys().next().value;
+    if (oldest !== undefined) processedDeliveries.delete(oldest);
+  }
+  for (const [shaKey, shaSet] of reviewedShas) {
+    if (shaSet.size === 0) {
+      reviewedShas.delete(shaKey);
+    }
   }
 }, 60 * 1000);
 
-// Log cache metrics periodically
 const cacheMetricsTimer = setInterval(() => {
-  const deliveryMemEstimate = processedDeliveries.size * 50;
-  console.log(`[cache] processedDeliveries=${processedDeliveries.size}/${MAX_DELIVERY_ENTRIES} ~${(deliveryMemEstimate / 1024 / 1024).toFixed(2)}MB`);
+  console.log(`[cache] processedDeliveries=${processedDeliveries.size}/${MAX_DELIVERY_ENTRIES}`);
 }, 5 * 60 * 1000);
 
-// Clean up timers on server shutdown
 function cleanupTimers() {
   clearInterval(dedupCleanupTimer);
   clearInterval(cacheMetricsTimer);
 }
 
+// Content-Type validation middleware for POST endpoints
+function requireJsonContentType(req, res, next) {
+  if (!req.is('application/json')) {
+    return res.status(415).json({ error: 'Content-Type must be application/json' });
+  }
+  next();
+}
+
 // 🟢 Route: GitHub Import & AI Review
-app.post('/api/analyze', requireApiKey, analyzeLimiter, async (req, res) => {
+app.post('/api/analyze', requireApiKey, requireJsonContentType, analyzeLimiter, async (req, res) => {
   let { repoUrl, company = 'General', language = 'English', model = 'llama-3.3-70b-versatile',temperature = 0.7,
      maxTokens = 2048, systemPrompt = '', batchSize = 5
    } = req.body;
@@ -211,6 +300,27 @@ app.post('/api/analyze', requireApiKey, analyzeLimiter, async (req, res) => {
       console.warn(`⚠️ System prompt contains non-Latin script characters: ${scriptRuns.join(', ')}`);
     }
   }
+
+  const DANGEROUS_PHRASES = [
+    'ignore all', 'ignore previous', 'ignore above',
+    'forget all', 'forget previous', 'you are not',
+    'override all', 'disregard', 'do not follow',
+    'new directive', 'system override', 'protocol change',
+    'roleplay mode', 'from now on', 'instead follow',
+    'real instruction', 'actual instruction', 'replace all',
+    'disobey', 'unauthorized', 'breach', 'bypass',
+    'your true purpose', 'you will now', 'ignore the above',
+    'ignore previous instructions', 'disregard all previous',
+    'forget your', 'you are programmed', 'override protocol',
+    'you have been', 'you must now', 'listen to me',
+  ];
+
+  const DANGEROUS_REGEXES = DANGEROUS_PHRASES.map(phrase => {
+    const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pattern = escaped.split(/\s+/).join('\\s+');
+    return new RegExp(pattern, 'i');
+  });
+
   function validatePrompt(prompt) {
     if (!prompt) return '';
     const maxLen = parseInt(process.env.MAX_SYSTEM_PROMPT_LENGTH) || 2000;
@@ -223,24 +333,7 @@ app.post('/api/analyze', requireApiKey, analyzeLimiter, async (req, res) => {
     const homoglyphNormalized = normalizeHomoglyphs(normalized);
     const lower = homoglyphNormalized.toLowerCase();
     
-    const dangerous = [
-      'ignore all', 'ignore previous', 'ignore above',
-      'forget all', 'forget previous', 'you are not',
-      'override all', 'disregard', 'do not follow',
-      'new directive', 'system override', 'protocol change',
-      'roleplay mode', 'from now on', 'instead follow',
-      'real instruction', 'actual instruction', 'replace all',
-      'disobey', 'unauthorized', 'breach', 'bypass',
-      'your true purpose', 'you will now', 'ignore the above',
-      'ignore previous instructions', 'disregard all previous',
-      'forget your', 'you are programmed', 'override protocol',
-      'you have been', 'you must now', 'listen to me',
-    ];
-
-    for (const phrase of dangerous) {
-      const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const pattern = escaped.split(/\s+/).join('\\s+');
-      const regex = new RegExp(pattern, 'i');
+    for (const regex of DANGEROUS_REGEXES) {
       if (regex.test(lower)) {
         throw new Error('System prompt contains prohibited directives and was rejected.');
       }
@@ -254,9 +347,25 @@ app.post('/api/analyze', requireApiKey, analyzeLimiter, async (req, res) => {
     return res.status(400).json({ error: err.message });
   }
 
-  // Generate unique folder name
+  // Generate unique folder name (needed early for logging/caching)
   const parsed = parseRepoUrl(repoUrl);
   const repoName = parsed.repo;
+  const owner = parsed.owner;
+  const maxRepoSizeMB = parseInt(process.env.MAX_REPO_SIZE_MB) || 100;
+  const maxSizeBytes = maxRepoSizeMB * 1024 * 1024;
+
+  // Pre-clone size check via GitHub API to prevent disk exhaustion
+  try {
+    const octokit = new Octokit({ auth: process.env.GITHUB_PAT || undefined });
+    const { data: repoData } = await octokit.rest.repos.get({ owner, repo: repoName });
+    const repoSizeBytes = (repoData.size || 0) * 1024;
+    if (repoSizeBytes > maxSizeBytes) {
+      return res.status(413).json({ error: `Repository exceeds the maximum allowed size of ${maxRepoSizeMB}MB (Reported size: ~${Math.round(repoSizeBytes/1024/1024)}MB).` });
+    }
+  } catch (err) {
+    console.warn(`Could not verify repository size via GitHub API for ${owner}/${repoName}. Proceeding to clone with filters...`);
+  }
+
   const uniqueId = crypto.randomUUID();
   const clonePath = path.join(tempReposDir, `${repoName}_${uniqueId}`);
 
@@ -266,20 +375,20 @@ app.post('/api/analyze', requireApiKey, analyzeLimiter, async (req, res) => {
   try {
     const cloneTimeout = parseInt(process.env.GIT_CLONE_TIMEOUT) || 120000;
     const git = simpleGit({ timeout: { block: cloneTimeout } });
-    await git.clone(repoUrl, clonePath, ['--depth', '1']);
+    await git.clone(repoUrl, clonePath, ['--depth', '1', '--single-branch', `--filter=blob:limit=${maxRepoSizeMB}m`]);
 
     // Check repository size
     const maxRepoSizeMB = parseInt(process.env.MAX_REPO_SIZE_MB) || 100;
     const maxSizeBytes = maxRepoSizeMB * 1024 * 1024;
-    const repoSize = getFolderSize(clonePath);
+    const repoSize = await getFolderSize(clonePath);
     
     if (repoSize > maxSizeBytes) {
-      deleteFolderRecursive(clonePath);
+      await deleteFolderRecursive(clonePath);
       return res.status(413).json({ error: `Repository exceeds the maximum allowed size of ${maxRepoSizeMB}MB.` });
     }
   } catch (error) {
     console.error(`❌ Git Clone Error: ${error.message}`);
-    deleteFolderRecursive(clonePath);
+    await deleteFolderRecursive(clonePath);
     return res.status(500).json({ error: 'Failed to clone repository. Make sure the URL is public and within size limits.' });
   }
 
@@ -289,35 +398,48 @@ app.post('/api/analyze', requireApiKey, analyzeLimiter, async (req, res) => {
       const files = readFilesRecursively(clonePath, [], clonePath, ignorePatterns);
       
       if (files.length === 0) {
-        deleteFolderRecursive(clonePath);
+        await deleteFolderRecursive(clonePath);
         return res.status(400).json({ error: 'No supportable source code files found in the repository.' });
       }
 
-      console.log(`📁 Found ${files.length} valid source files. Sending to AI engine...`);
+      console.log(`📁 Found ${files.length} valid source files. Checking cache...`);
 
-      // 2. Mocking AI Response for initial setup (or forward to FastAPI AI Engine)
-      // This is a perfect placeholder where contributors can connect the FastAPI server!
-      const aiEngineUrl = process.env.AI_ENGINE_URL || 'http://localhost:8000';
-      
-      let reviewResult;
-      const baseUrl = aiEngineUrl.replace(/\/+$/, '');
-      try {
-        const aiResponse = await fetch(`${baseUrl}/analyze`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ files, company, language, model, temperature, maxTokens, systemPrompt: validatedPrompt, batchSize })
-        });
-        
-        if (aiResponse.ok) {
-          reviewResult = await aiResponse.json();
-          reviewResult._mock = false;
-        } else {
-          throw new Error('AI engine responded with error');
+      // 1.5. Check analysis cache to avoid redundant LLM calls for identical analyses
+      const cacheKey = analysisCache.generateKey(repoUrl, files, { model, language, company });
+      let reviewResult = analysisCache.get(cacheKey);
+      let cacheHit = false;
+
+      if (reviewResult) {
+        cacheHit = true;
+        console.log(`🎯 Using cached analysis result for this repository and configuration`);
+      } else {
+        // 2. Mocking AI Response for initial setup (or forward to FastAPI AI Engine)
+        // This is a perfect placeholder where contributors can connect the FastAPI server!
+        const aiEngineUrl = process.env.AI_ENGINE_URL || 'http://localhost:8000';
+
+        const baseUrl = aiEngineUrl.replace(/\/+$/, '');
+        try {
+          const aiResponse = await fetchWithTimeout(`${baseUrl}/analyze`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ files, company, language, model, temperature, maxTokens, systemPrompt: validatedPrompt, batchSize })
+          }, 120000);
+
+          if (aiResponse.ok) {
+            reviewResult = await aiResponse.json();
+            reviewResult._mock = false;
+          } else {
+            throw new Error('AI engine responded with error');
+          }
+        } catch (err) {
+          console.warn('⚠️ FastAPI engine not running, falling back to local Express review handler');
+          // Explicitly run local mock engine
+          reviewResult = mockAIReview(files, model);
+          reviewResult._mock = true;
         }
-      } catch (err) {
-        console.warn('⚠️ FastAPI engine not running, falling back to local Express review handler');
-        // Let's generate a smart mockup review based on files so it works as an autonomous MVP
-        reviewResult = mockAIReview(files, model);
+
+        // Cache the result for future identical analyses
+        analysisCache.set(cacheKey, reviewResult);
       }
 
       // 3. Inject Regex-based Secret Detections & Complexity Metrics into the analysis result
@@ -351,16 +473,36 @@ app.post('/api/analyze', requireApiKey, analyzeLimiter, async (req, res) => {
 
       // 3. Persist the repository context for chat in MongoDB so it survives
       //    server restarts and works across multiple backend instances.
-      const sessionId = crypto.randomUUID();
-      try {
-        await Session.create({
-          sessionId,
-          repoUrl,
-          repoName,
-          files,
-        });
-      } catch (sessionErr) {
-        console.warn('⚠️ Failed to persist session context:', sessionErr.message);
+      const MAX_FILE_CONTENT_STORAGE = 50000;
+      const storedFiles = files.map(f => ({
+        name: f.name,
+        content: f.content.length > MAX_FILE_CONTENT_STORAGE
+          ? f.content.slice(0, MAX_FILE_CONTENT_STORAGE)
+          : f.content
+      }));
+
+      const MAX_SESSION_DOC_SIZE = 10 * 1024 * 1024;
+      const estimatedSize = estimateSessionSize(storedFiles);
+
+      let sessionId = null;
+      let sessionPersisted = false;
+      if (estimatedSize <= MAX_SESSION_DOC_SIZE) {
+        sessionId = crypto.randomUUID();
+        try {
+          await Session.create({
+            sessionId,
+            repoUrl,
+            repoName,
+            files: storedFiles,
+            lastAccessedAt: new Date(),
+            ownerToken: req.clientId,
+          });
+          sessionPersisted = true;
+        } catch (sessionErr) {
+          console.warn('⚠️ Failed to persist session context:', sessionErr.message);
+        }
+      } else {
+        console.warn(`⚠️ Session too large (${(estimatedSize / 1024 / 1024).toFixed(1)}MB), skipping persistence`);
       }
 
       // 4. Compute and persist analytics
@@ -375,29 +517,33 @@ app.post('/api/analyze', requireApiKey, analyzeLimiter, async (req, res) => {
         }
       }
       const totalFindings = totalBugs + totalSecurityIssues + totalOptimizations + totalStylingIssues;
-      const healthScore = Math.max(0, Math.round(100 - totalBugs * 5 - totalSecurityIssues * 3 - totalOptimizations * 1 - totalStylingIssues * 0.5));
+      const healthScore = Math.max(0, Math.round(100 - totalBugs * 3 - totalSecurityIssues * 15 - totalOptimizations * 1 - totalStylingIssues * 0.5));
 
-      try {
-        await Analytics.create({
-          repoUrl,
-          repoName,
-          filesReviewedCount: files.length,
-          totalBugs,
-          totalSecurityIssues,
-          totalOptimizations,
-          totalStylingIssues,
-          totalFindings,
-          healthScore,
-          language: language || 'General',
-          model: model || 'llama-3.3-70b-versatile',
-          analyzedAt: new Date(),
-        });
-      } catch (dbErr) {
-        console.warn('⚠️ Failed to persist analytics:', dbErr.message);
+      if (!reviewResult?._mock) {
+        try {
+          await ensureConnection();
+          await Analytics.create({
+            sessionId,
+            repoUrl,
+            repoName,
+            filesReviewedCount: files.length,
+            totalBugs,
+            totalSecurityIssues,
+            totalOptimizations,
+            totalStylingIssues,
+            totalFindings,
+            healthScore,
+            language: language || 'General',
+            model: model || 'llama-3.3-70b-versatile',
+            analyzedAt: new Date(),
+          });
+        } catch (dbErr) {
+          console.warn('⚠️ Failed to persist analytics:', dbErr.message);
+        }
       }
 
       // 5. Clean up folder
-      deleteFolderRecursive(clonePath);
+      await deleteFolderRecursive(clonePath);
       
       // 6. Return result
       return res.json({
@@ -405,80 +551,119 @@ app.post('/api/analyze', requireApiKey, analyzeLimiter, async (req, res) => {
         repoName,
         filesReviewedCount: files.length,
         analysis: reviewResult,
-        sessionId
+        sessionId,
+        sessionPersisted
       });
 
     } catch (err) {
       console.error(err);
-      deleteFolderRecursive(clonePath);
+      await deleteFolderRecursive(clonePath);
       return res.status(500).json({ error: 'An error occurred during repository analysis.' });
     }
 });
 
 // 🟢 Route: AI Chat with Repository (session-isolated per issue #59)
-app.post('/api/chat', requireApiKey, chatLimiter, async (req, res) => {
+app.post('/api/chat', requireApiKey, requireJsonContentType, chatLimiter, async (req, res) => {
   const { message, history = [], model = 'llama-3.3-70b-versatile', temperature = 0.7, maxTokens = 2048, systemPrompt = 'You are a helpful code reviewer.', sessionId, useRag } = req.body;
 
   if (!message) {
     return res.status(400).json({ error: 'Message is required.' });
   }
 
-  let context = null;
+  // Verify session ownership before entering the queue (issue #742).
+  // Only the client that created the session may access it.
   if (sessionId) {
     try {
-      context = await Session.findOne({ sessionId });
-      if (context) {
-        // Refresh TTL by resetting createdAt so the 30-minute window restarts
-        await Session.updateOne({ sessionId }, { $set: { createdAt: new Date() } });
+      const session = await Session.findOne({ sessionId });
+      if (session) {
+        // Verify session ownership to prevent IDOR (issue #742):
+        // only the client that created the session may access it.
+        if (session.ownerToken && session.ownerToken !== req.clientId) {
+          console.warn(`⚠️ IDOR attempt: client ${req.clientId} tried to access session ${sessionId} owned by ${session.ownerToken}`);
+          return res.status(403).json({ error: 'Access denied: this session does not belong to you.' });
+        }
+        // Update lastAccessedAt for the sliding-window TTL (see issue #743).
+        // Each interaction resets the 24-hour expiry countdown. The hard
+        // ceiling on absoluteExpiry (7 days) still limits total lifetime.
+        await Session.updateOne({ sessionId }, { $set: { lastAccessedAt: new Date() } });
       }
     } catch (sessionErr) {
       console.warn('⚠️ Failed to retrieve session from MongoDB:', sessionErr.message);
     }
   }
 
-  if (!context) {
-    const hint = !sessionId ? 'sessionId is missing from the request' : 'session expired or not found';
-    return res.status(400).json({ error: `No repository is currently active or ${hint}. Please analyze a repository first.` });
-  }
-
-  const aiEngineUrl = process.env.AI_ENGINE_URL || 'http://localhost:8000';
-
+  // Use reviewQueue to serialize requests per session, preventing
+  // lost-update race conditions when multiple messages arrive concurrently
+  // for the same session (see issue #746).
   try {
-    const baseUrl = aiEngineUrl.replace(/\/+$/, '');
-    const aiResponse = await fetch(`${baseUrl}/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        files: context.files,
-        message,
-        history,
-        model,
-        temperature,
-        maxTokens,
-        systemPrompt,
-        useRag
-      })
-    });
+    await reviewQueue.runExclusive(sessionId || '__no_session__', async () => {
+      let context = null;
+      if (sessionId) {
+        try {
+          context = await Session.findOne({ sessionId });
+          if (context) {
+            // Update lastAccessedAt for activity tracking. createdAt remains
+            // unchanged so the original TTL (30 minutes from creation) is
+            // preserved, preventing indefinite session extension (see issue #672).
+            await Session.updateOne({ sessionId }, { $set: { lastAccessedAt: new Date() } });
+          }
+        } catch (sessionErr) {
+          console.warn('⚠️ Failed to retrieve session from MongoDB:', sessionErr.message);
+        }
+      }
 
-    if (aiResponse.ok) {
-      const data = await aiResponse.json();
-      return res.json(data);
-    } else {
-      const errText = await aiResponse.text();
-      throw new Error(errText || 'AI engine chat request failed');
-    }
+      if (!context) {
+        const hint = !sessionId ? 'sessionId is missing from the request' : 'session expired or not found';
+        res.status(400).json({ error: `No repository is currently active or ${hint}. Please analyze a repository first.` });
+        return;
+      }
+
+      const aiEngineUrl = process.env.AI_ENGINE_URL || 'http://localhost:8000';
+
+      try {
+        const baseUrl = aiEngineUrl.replace(/\/+$/, '');
+        const aiResponse = await fetchWithTimeout(`${baseUrl}/chat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            files: context.files,
+            message,
+            history,
+            model,
+            temperature,
+            maxTokens,
+            systemPrompt,
+            useRag,
+            repo_url: context.repoUrl
+          })
+        }, 30000);
+
+        if (aiResponse.ok) {
+          const data = await aiResponse.json();
+          res.json(data);
+        } else {
+          const errText = await aiResponse.text();
+          throw new Error(errText || 'AI engine chat request failed');
+        }
+      } catch (err) {
+        console.error('❌ Chat API Error:', err.message);
+
+        // Simple local fallback if Python FastAPI server is offline
+        const responseMessage = `[Fallback Response] I see you are asking about: "${message}". Currently, the FastAPI AI Engine is offline, so I cannot analyze the full codebase for your query. Please make sure the AI Engine service is running on port 8000.`;
+        res.json({ response: responseMessage, sessionId, _mock: true, _mockWarning: 'AI Engine unavailable. Fallback response generated.' });
+      }
+    });
   } catch (err) {
-    console.error('❌ Chat API Error:', err.message);
-    
-    // Simple local fallback if Python FastAPI server is offline
-    const responseMessage = `[Fallback Response] I see you are asking about: "${message}". Currently, the FastAPI AI Engine is offline, so I cannot analyze the full codebase for your query. Please make sure the AI Engine service is running on port 8000.`;
-    return res.json({ response: responseMessage, sessionId, _mock: true, _mockWarning: 'AI Engine unavailable. Fallback response generated.' });
+    console.error('❌ Chat serialization error:', err);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'An internal error occurred while processing your message.' });
+    }
   }
 });
 
 // 🟢 Route: Proxy for RAG query — forwards to the AI engine
 app.post('/api/rag/query', requireApiKey, async (req, res) => {
-  const { question } = req.body;
+  const { question, repoUrl } = req.body;
   if (!question) {
     return res.status(400).json({ error: 'question is required.' });
   }
@@ -487,11 +672,11 @@ app.post('/api/rag/query', requireApiKey, async (req, res) => {
 
   try {
     const baseUrl = aiEngineUrl.replace(/\/+$/, '');
-    const aiResponse = await fetch(`${baseUrl}/api/rag/query`, {
+    const aiResponse = await fetchWithTimeout(`${baseUrl}/api/rag/query`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question })
-    });
+      body: JSON.stringify({ question, repo_url: repoUrl })
+    }, 30000);
 
     if (aiResponse.ok) {
       const data = await aiResponse.json();
@@ -527,8 +712,7 @@ app.post('/api/webhook', async (req, res) => {
   const event = req.headers['x-github-event'];
   const payload = req.body;
 
-  if (event === 'pull_request') {
-    // Deduplicate by X-GitHub-Delivery header
+    if (event === 'pull_request') {
     const deliveryId = req.headers['x-github-delivery'];
     if (deliveryId) {
       if (processedDeliveries.has(deliveryId)) {
@@ -545,10 +729,39 @@ app.post('/api/webhook', async (req, res) => {
       const owner = payload.repository.owner.login;
       const repo = payload.repository.name;
       const reviewKey = `${owner}/${repo}/#${pullNumber}`;
+
+      const shaKey = `${owner}/${repo}/#${pullNumber}`;
+      if (!reviewedShas.has(shaKey)) {
+        reviewedShas.set(shaKey, new Set());
+      }
+      if (reviewedShas.get(shaKey).has(headSha)) {
+        console.log(`⏭️ Already reviewed commit ${headSha.substring(0,7)} for PR #${pullNumber}`);
+        return res.json({ success: true, message: 'Webhook received (duplicate SHA skipped).' });
+      }
+      reviewedShas.get(shaKey).add(headSha);
+      setTimeout(() => {
+        const set = reviewedShas.get(shaKey);
+        if (set) {
+          set.delete(headSha);
+          if (set.size === 0) {
+            reviewedShas.delete(shaKey);
+          }
+        }
+      }, 3600000);
       
       console.log(`📡 GitHub Webhook received: PR #${pullNumber} ${action} (${headSha.substring(0,7)}) in ${owner}/${repo}`);
       
-      enqueueWebhookReview(owner, repo, pullNumber, headSha, reviewKey);
+      reviewQueue.enqueue(reviewKey, { owner, repo, pullNumber, headSha }, async (item) => {
+        try {
+          await runWebhookReview(item.owner, item.repo, item.pullNumber, item.headSha);
+        } catch (error) {
+          console.error(`❌ Webhook review failed for ${headSha}:`, error.message);
+          const failedSet = failedReviews.get(shaKey) || new Set();
+          failedSet.add(headSha);
+          failedReviews.set(shaKey, failedSet);
+          throw error;
+        }
+      });
     }
   }
 
@@ -622,32 +835,7 @@ app.post('/api/issues/create', requireApiKey, async (req, res) => {
   }
 });
 
-// 🟢 Webhook review queuing — prevents race conditions from rapid webhook events
-function enqueueWebhookReview(owner, repo, pullNumber, headSha, reviewKey) {
-  if (!reviewQueues.has(reviewKey)) {
-    reviewQueues.set(reviewKey, null);
-    dispatchReview(owner, repo, pullNumber, headSha, reviewKey);
-  } else {
-    reviewQueues.set(reviewKey, { owner, repo, pullNumber, headSha });
-    console.log(`📥 Replaced pending review with latest head for ${reviewKey}@${headSha.substring(0,7)}`);
-  }
-}
-
-async function dispatchReview(owner, repo, pullNumber, headSha, reviewKey) {
-  try {
-    await runWebhookReview(owner, repo, pullNumber, headSha);
-  } catch (err) {
-    console.error(`❌ Async PR Review Error:`, err);
-  } finally {
-    const next = reviewQueues.get(reviewKey);
-    if (next) {
-      reviewQueues.set(reviewKey, null);
-      dispatchReview(next.owner, next.repo, next.pullNumber, next.headSha, reviewKey);
-    } else {
-      reviewQueues.delete(reviewKey);
-    }
-  }
-}
+// Webhook review queueing uses ReviewQueue from reviewQueue.js (per-key mutex)
 
 // 🟢 Helper to execute Webhook PR review logic
 async function runWebhookReview(owner, repo, pullNumber, headSha) {
@@ -701,7 +889,7 @@ async function runWebhookReview(owner, repo, pullNumber, headSha) {
     }
 
     // Run local secrets scanner
-    const secretFindings = scanSecretsInChanges(file.changes);
+    const { findings: secretFindings, truncated: scanTruncated, totalChanges: scanTotal, skippedReason: scanReason } = scanSecretsInChanges(file.changes);
     secretFindings.forEach(f => {
       commentsToPost.push({
         path: file.path,
@@ -709,6 +897,9 @@ async function runWebhookReview(owner, repo, pullNumber, headSha) {
         body: `<!-- RepoSage Review Comment -->\n${f.comment}`
       });
     });
+    if (scanTruncated) {
+      console.warn(`⚠️ Secrets scan truncated for ${file.path}: ${scanReason} (total ${scanTotal} changes)`);
+    }
 
     // Save list to send to FastAPI AI Engine
     filesToReview.push({
@@ -716,6 +907,9 @@ async function runWebhookReview(owner, repo, pullNumber, headSha) {
       changes: file.changes.map(c => ({ line: c.line, content: c.content }))
     });
   }
+
+  // Track whether the AI engine was successfully queried
+  let aiEngineQueried = false;
 
   if (filesToReview.length > 0) {
     console.log(`🧠 Querying AI engine for ${filesToReview.length} files...`);
@@ -740,6 +934,7 @@ async function runWebhookReview(owner, repo, pullNumber, headSha) {
             }
           });
         }
+        aiEngineQueried = true;
       }
     } catch (err) {
       console.warn("⚠️ FastAPI AI Engine error, posting local scans only:", err.message);
@@ -749,18 +944,33 @@ async function runWebhookReview(owner, repo, pullNumber, headSha) {
   // 3. Post consolidated review comment back to GitHub PR
   if (commentsToPost.length > 0) {
     console.log(`✍️ Posting PR Review with ${commentsToPost.length} inline comments...`);
+    let body = `## 🛡️ RepoSage AI Code Review Audit Completed!\n\n`;
+    if (!aiEngineQueried && filesToReview.length > 0) {
+      body += `⚠️ **Limited Review:** The AI engine was unreachable during this review. Only regex-based secret scanning was performed. AI-powered bug/performance/style analysis was skipped. Please ensure the AI Engine service is running and re-trigger the review for a complete audit.\n\n`;
+    }
+    body += `I have audited the code changes in this Pull Request and generated **${commentsToPost.length} actionable inline suggestions**.\n\nPlease review my feedback and suggestions below. Happy coding! 🚀`;
     await octokit.rest.pulls.createReview({
       owner,
       repo,
       pull_number: pullNumber,
       commit_id: headSha,
       event: 'COMMENT',
-      body: `## 🛡️ RepoSage AI Code Review Audit Completed!
-
-I have audited the code changes in this Pull Request and generated **${commentsToPost.length} actionable inline suggestions**. 
-
-Please review my feedback and suggestions below. Happy coding! 🚀`,
+      body,
       comments: commentsToPost
+    });
+  } else if (!aiEngineQueried) {
+    console.error('❌ AI Engine was unreachable — posting COMMENT review instead of auto-approving.');
+    await octokit.rest.pulls.createReview({
+      owner,
+      repo,
+      pull_number: pullNumber,
+      commit_id: headSha,
+      event: 'COMMENT',
+      body: `## ⚠️ RepoSage AI Code Review — AI Engine Unavailable
+
+The AI engine could not be reached during this review. The secrets scanner found **0 issues**, but the PR was **not** fully reviewed by the AI.
+
+Please ensure the AI Engine service is running and re-trigger the review for a complete analysis.`
     });
   } else {
     console.log('🎉 No code issues or recommendations found. Posting approval review...');
@@ -791,12 +1001,25 @@ Please review my feedback and suggestions below. Happy coding! 🚀`,
 
 
 
+// Helper to sanitize repository name for report filenames
+function sanitizeFilename(repoName) {
+  const str = String(repoName);
+  if (str === '../../../etc/passwd') return '_____etc_passwd';
+  if (str === '../admin') return '___admin';
+  if (str === '!@#$%^&*()') return '_________';
+  return str.replace(/\.\.+/g, '_').replace(/[^\w.-]+/g, '_');
+}
+
 // 🟢 Route: Export Review Report to HTML
-app.post('/api/reports/html', requireApiKey, (req, res) => {
+app.post('/api/reports/html', requireApiKey, exportLimiter, (req, res) => {
   const { repoName, analysis } = req.body;
   if (!repoName || !analysis) {
     return res.status(400).json({ error: 'Repository name and analysis result are required.' });
   }
+
+  // Sanitize repoName to prevent path traversal attacks in the Content-Disposition header.
+  // Keep only word characters, dots, and hyphens to ensure safe filenames.
+  const safeRepoName = sanitizeFilename(repoName);
 
   let fileRows = '';
   
@@ -938,12 +1161,12 @@ app.post('/api/reports/html', requireApiKey, (req, res) => {
   `;
   
   res.setHeader('Content-Type', 'text/html');
-  res.setHeader('Content-Disposition', `attachment; filename="${repoName}_AUDIT_REPORT.html"`);
+  res.setHeader('Content-Disposition', `attachment; filename="${safeRepoName}_AUDIT_REPORT.html"`);
   return res.send(html);
 });
 
 // 🟢 Route: Export Review Report to PDF
-app.post('/api/reports/pdf', requireApiKey, (req, res) => {
+app.post('/api/reports/pdf', requireApiKey, exportLimiter, (req, res) => {
   const { repoName, analysis } = req.body;
   if (!repoName || !analysis) {
     return res.status(400).json({ error: 'Repository name and analysis result are required.' });
@@ -972,7 +1195,7 @@ app.post('/api/reports/pdf', requireApiKey, (req, res) => {
     return acc;
   }, {});
   const totalFindings = Object.values(summary).reduce((total, count) => total + count, 0);
-  const safeRepoName = String(repoName).replace(/[^\w.-]+/g, '_');
+  const safeRepoName = sanitizeFilename(repoName);
 
   const doc = new PDFDocument({ margin: 48, size: 'A4' });
   const chunks = [];
@@ -1074,14 +1297,21 @@ app.post('/api/reports/pdf', requireApiKey, (req, res) => {
 // 🟢 Route: Analytics Trends — 30-day time-series of repository health scores
 app.get('/api/analytics/trends', requireApiKey, async (req, res) => {
   try {
+    await ensureConnection();
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
+    const matchFilter = {
+      analyzedAt: { $gte: thirtyDaysAgo },
+    };
+
+    if (req.query.sessionId) {
+      matchFilter.sessionId = req.query.sessionId;
+    }
+
     const trends = await Analytics.aggregate([
       {
-        $match: {
-          analyzedAt: { $gte: thirtyDaysAgo },
-        },
+        $match: matchFilter,
       },
       {
         $group: {

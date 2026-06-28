@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import crypto from 'crypto';
 
 // Set up REPOSAGE_API_KEY before importing the middleware
 process.env.REPOSAGE_API_KEY = 'test-secret-key';
@@ -103,4 +104,26 @@ test('requireApiKey returns 500 when REPOSAGE_API_KEY is not configured', () => 
 
   // Restore
   process.env.REPOSAGE_API_KEY = origKey;
+});
+
+test('requireApiKey returns 401 and safely handles error when session cookie payload is corrupt JSON', () => {
+  const secret = process.env.REPOSAGE_API_KEY || 'test-secret-key';
+  
+  // Create a payload that is NOT valid JSON but is correctly signed
+  const corruptPayload = Buffer.from('this-is-not-valid-json').toString('base64url');
+  const signature = crypto.createHmac('sha256', secret).update(corruptPayload).digest('base64url');
+  
+  // Construct the spoofed cookie: reposage_session=payload.signature
+  const sessionCookie = `reposage_session=${corruptPayload}.${signature}`;
+  
+  const { req, res } = makeMockReqRes({ cookie: sessionCookie });
+  let nextCalled = false;
+  const next = () => { nextCalled = true; };
+
+  // This will hit the catch block of JSON.parse in the middleware
+  requireApiKey(req, res, next);
+
+  assert.equal(nextCalled, false, 'next() should not be called');
+  assert.equal(res.statusCode, 401, 'should return 401 Unauthorized');
+  assert.ok(res.body.error.includes('Unauthorized'), 'should return unauthorized error');
 });
