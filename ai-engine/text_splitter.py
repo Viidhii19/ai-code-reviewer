@@ -63,17 +63,17 @@ def _generate_chunk_id(file_name: str, chunk_index: int) -> str:
 
 def _calculate_line_numbers(content: str, chunks: list[str]) -> list[tuple[int, int]]:
     line_numbers = []
-    remaining = content
+    search_start = 0
     for chunk in chunks:
-        start_idx = remaining.find(chunk)
+        start_idx = content.find(chunk, search_start)
         if start_idx == -1:
             line_numbers.append((0, 0))
             continue
-        pre = remaining[:start_idx]
+        pre = content[:start_idx]
         start_line = pre.count("\n")
         end_line = start_line + chunk.count("\n")
         line_numbers.append((start_line, end_line))
-        remaining = remaining[start_idx + len(chunk):]
+        search_start = start_idx + 1
     return line_numbers
 
 
