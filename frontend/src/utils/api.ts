@@ -54,7 +54,11 @@ const getCsrfToken = (): string | null => {
   return match ? match[1] : null;
 };
 
-export const apiFetch = async (path: string, options: RequestInit = {}) => {
+export interface ApiFetchOptions extends RequestInit {
+  timeout?: number;
+}
+
+export const apiFetch = async (path: string, options: ApiFetchOptions = {}) => {
   await ensureApiSession();
   const headers = new Headers(options.headers);
   if (!headers.has("Content-Type")) {
@@ -68,9 +72,26 @@ export const apiFetch = async (path: string, options: RequestInit = {}) => {
     }
   }
 
-  return fetch(`${API_BASE_URL}${path}`, {
-    ...options,
-    credentials: "include",
-    headers,
-  });
+  const { timeout = 60000, ...fetchOptions } = options;
+  
+  const controller = new AbortController();
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  
+  if (timeout > 0) {
+    timeoutId = setTimeout(() => controller.abort(), timeout);
+  }
+
+  try {
+    const response = await fetch(`${API_BASE_URL}${path}`, {
+      ...fetchOptions,
+      credentials: "include",
+      headers,
+      signal: fetchOptions.signal || controller.signal,
+    });
+    return response;
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  }
 };
