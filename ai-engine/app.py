@@ -271,6 +271,16 @@ async def start_rate_limit_cleanup():
                 del _rate_limit_store[ip]
     app.state.rate_limit_cleanup_task = asyncio.create_task(cleanup())
 
+@app.on_event("shutdown")
+async def cancel_rate_limit_cleanup():
+    task = getattr(app.state, "rate_limit_cleanup_task", None)
+    if task:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
 async def require_api_key(request: Request, call_next):
     if request.url.path == "/" or request.url.path == "/docs" or request.url.path.startswith("/openapi"):
         return await call_next(request)
