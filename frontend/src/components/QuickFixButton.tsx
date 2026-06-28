@@ -28,6 +28,8 @@ export function QuickFixButton({ text, onApply }: { text: string; onApply: (text
       <button
         type="button"
         onClick={() => setOpen(!open)}
+        aria-expanded={open}
+        aria-haspopup="menu"
         className={`border-none rounded px-2 py-1 cursor-pointer inline-flex items-center justify-center transition-all duration-200 ease-in-out ${
           open ? 'bg-yellow-500/15 text-yellow-500' : applied ? 'bg-transparent text-green-500' : 'bg-transparent text-gray-400 hover:text-gray-300'
         }`}
