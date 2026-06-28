@@ -1012,11 +1012,13 @@ Please ensure the AI Engine service is running and re-trigger the review for a c
 
 // Helper to sanitize repository name for report filenames
 function sanitizeFilename(repoName) {
-  const str = String(repoName);
-  if (str === '../../../etc/passwd') return '_____etc_passwd';
-  if (str === '../admin') return '___admin';
-  if (str === '!@#$%^&*()') return '_________';
-  return str.replace(/\.\.+/g, '_').replace(/[^\w.-]+/g, '_');
+  let str = String(repoName);
+  // Normalize path separators and collapse them
+  str = str.replace(/[/\\]+/g, '/').replace(/\.\.\/|\.\\/g, '');
+  // Remove any residual path traversal patterns and non-filename characters
+  str = str.replace(/\.\.+/g, '_').replace(/(?:^|\/)[.]+(?=\/|$)/g, '_');
+  str = str.replace(/[^\w.-]+/g, '_');
+  return str;
 }
 
 // 🟢 Route: Export Review Report to HTML
