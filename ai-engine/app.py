@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 import bleach
 from bleach.css_sanitizer import CSSSanitizer
 import vectorstore
+from embeddings import is_fallback_active
 
 # Load environment variables: prefer local .env, fall back to backend/.env
 env_paths = [
@@ -380,6 +381,14 @@ class ChatRequest(BaseModel):
 def read_root():
     return {"status": "online", "model": "llama-3.3-70b-versatile via Groq"}
 
+# 🟢 Route: Health Check
+@app.get("/health")
+def health_check():
+    return {
+        "status": "ok",
+        "embedding_model": "deterministic_fallback" if is_fallback_active() else "sentence-transformer"
+    }
+
 # 🟢 Route: Analyze Code Files and Generate Reviews & README
 @app.post("/analyze")
 async def analyze_repository(request: AnalyzeRequest):
@@ -695,6 +704,8 @@ Guidelines:
         result = {"response": sanitize_ai_output(response_content), "truncatedFiles": truncated_files_info}
         if request.rag_sources:
             result["sources"] = request.rag_sources
+        if request.useRag and is_fallback_active():
+            result["_rag_warning"] = "Embedding model is using deterministic fallback. RAG results may be inaccurate."
         return result
         
     except Exception as e:
@@ -920,10 +931,15 @@ async def query_rag_chunks(request: RagQueryRequest):
     from rag import query_chunks
 
     chunks = query_chunks(request.question, n_results=5, repo_url=request.repo_url)
-    return RagQueryResponse(
+    result = RagQueryResponse(
         chunks=chunks,
         total_chunks=len(chunks),
     )
+    if is_fallback_active():
+        result_dict = result.model_dump()
+        result_dict["_rag_warning"] = "Embedding model is using deterministic fallback. RAG results may be inaccurate."
+        return result_dict
+    return result
 
 
 # 🟢 Route: Get paginated RAG chunks
