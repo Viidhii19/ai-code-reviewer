@@ -63,7 +63,7 @@ export function analyzeComplexity(fileContent, filePath) {
         inBlockComment = true;
       }
       // Line starting with * inside a doc-comment block (e.g. JSDoc)
-      else if (trimmed.startsWith('*')) {
+      else if (inBlockComment && trimmed.startsWith('*')) {
         commentLines++;
       }
     } else if (ext === '.py' || ext === '.rb') {
@@ -94,7 +94,7 @@ export function analyzeComplexity(fileContent, filePath) {
 
     // --- Function Detection ---
     if (['.js', '.jsx', '.ts', '.tsx'].includes(ext)) {
-      if (trimmed.includes('function ') || trimmed.includes('=>') || /^\s*(?:async\s+)?\w+\s*\([^)]*\)\s*\{/g.test(trimmed)) {
+      if (trimmed.includes('function ') || trimmed.includes('=>') || /^\s*(?:async\s+)?\w+\s*\([^)]*\)\s*\{/.test(trimmed)) {
         functionCount++;
       }
     } else if (ext === '.py') {

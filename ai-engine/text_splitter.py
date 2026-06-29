@@ -53,6 +53,7 @@ def _make_splitter(file_name: str, chunk_size: Optional[int] = None, chunk_overl
         chunk_overlap=final_chunk_overlap,
         separators=separators,
         length_function=len,
+        add_start_index=True,
     )
 
 
@@ -61,19 +62,13 @@ def _generate_chunk_id(file_name: str, chunk_index: int) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
-def _calculate_line_numbers(content: str, chunks: list[str]) -> list[tuple[int, int]]:
+def _calculate_line_numbers(content: str, chunks: list[str], start_indices: list[int]) -> list[tuple[int, int]]:
     line_numbers = []
-    search_start = 0
-    for chunk in chunks:
-        start_idx = content.find(chunk, search_start)
-        if start_idx == -1:
-            line_numbers.append((0, 0))
-            continue
+    for chunk, start_idx in zip(chunks, start_indices):
         pre = content[:start_idx]
         start_line = pre.count("\n")
         end_line = start_line + chunk.count("\n")
         line_numbers.append((start_line, end_line))
-        search_start = start_idx + 1
     return line_numbers
 
 
@@ -88,8 +83,10 @@ def split_file_content(
         return []
 
     splitter = _make_splitter(file_name, chunk_size, chunk_overlap)
-    chunks = splitter.split_text(content)
-    line_numbers = _calculate_line_numbers(content, chunks)
+    docs = splitter.create_documents([content])
+    chunks = [d.page_content for d in docs]
+    start_indices = [d.metadata.get("start_index", 0) for d in docs]
+    line_numbers = _calculate_line_numbers(content, chunks, start_indices)
 
     results = []
     for i, chunk in enumerate(chunks):

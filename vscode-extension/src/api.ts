@@ -26,11 +26,15 @@ export async function reviewFileContent(
   const headers = buildRequestHeaders(apiKey);
 
   try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 60000);
     const response = await fetch(`${apiUrl}/api/analyze`, {
       method: "POST",
       headers,
       body: JSON.stringify(buildRequestBody(fileName, content)),
+      signal: controller.signal,
     });
+    clearTimeout(timeout);
 
     if (!response.ok) {
       const errorText = await response.text();

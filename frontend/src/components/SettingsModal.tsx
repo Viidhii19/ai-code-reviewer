@@ -43,7 +43,15 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
     previousFocusRef.current = document.activeElement as HTMLElement;
     const saved = localStorage.getItem("reposage_ai_settings");
     if (saved) {
-      setSettings(JSON.parse(saved));
+      try {
+        const parsed = JSON.parse(saved);
+        if (parsed && typeof parsed === "object") {
+          setSettings({ ...DEFAULT_SETTINGS, ...parsed });
+        }
+      } catch (error) {
+        console.warn("Invalid saved AI settings; using defaults.", error);
+        setSettings(DEFAULT_SETTINGS);
+      }
     }
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
@@ -60,6 +68,10 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
   }, [onClose, trapFocus]);
 
   const handleSave = () => {
+    if (settings.maxTokens < 1 || settings.maxTokens > 32768) {
+      alert("Max Tokens must be between 1 and 32768.");
+      return;
+    }
     localStorage.setItem(
       "reposage_ai_settings",
       JSON.stringify(settings)
@@ -159,8 +171,8 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
           <input
             type="range"
             min="0"
-            max="1"
-            step="0.1"
+            max="2"
+            step="0.05"
             value={settings.temperature}
             onChange={(e) =>
               setSettings({
@@ -190,6 +202,8 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
 
           <input
             type="number"
+            min="1"
+            max="32768"
             value={settings.maxTokens}
             onChange={(e) =>
               setSettings({

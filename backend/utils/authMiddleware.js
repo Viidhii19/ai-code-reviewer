@@ -13,6 +13,10 @@ function getConfiguredApiKey(res) {
   return validKey;
 }
 
+function getSessionSecret() {
+  return process.env.SESSION_SECRET || process.env.REPOSAGE_API_KEY;
+}
+
 function signValue(value, secret) {
   return crypto.createHmac('sha256', secret).update(value).digest('base64url');
 }
@@ -55,10 +59,12 @@ export function createFrontendSessionCookie(res) {
   const validKey = getConfiguredApiKey(res);
   if (!validKey) return null;
 
+  const sessionSecret = getSessionSecret();
+
   const payload = Buffer.from(
     JSON.stringify({ exp: Date.now() + SESSION_MAX_AGE_SECONDS * 1000, uid: crypto.randomUUID() }),
   ).toString('base64url');
-  const signature = signValue(payload, validKey);
+  const signature = signValue(payload, sessionSecret);
   const secureFlag = process.env.NODE_ENV === 'production' ? '; Secure' : '';
 
   return `${SESSION_COOKIE_NAME}=${payload}.${signature}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_MAX_AGE_SECONDS}${secureFlag}`;
@@ -72,23 +78,10 @@ export const requireApiKey = (req, res, next) => {
     ? req.headers['x-api-key'][0]
     : req.headers['x-api-key'];
 
-  if (hasValidSessionCookie(req, validKey)) {
-    const cookieValue = getCookie(req, SESSION_COOKIE_NAME);
-    if (cookieValue) {
-      const [payload] = cookieValue.split('.');
-      if (payload) {
-        try {
-          const session = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
-          req.clientId = session.uid || 'anonymous';
-        } catch {
-          req.clientId = 'anonymous';
-        }
-      } else {
-        req.clientId = 'anonymous';
-      }
-    } else {
-      req.clientId = 'anonymous';
-    }
+  const sessionSecret = getSessionSecret();
+
+  if (hasValidSessionCookie(req, sessionSecret)) {
+    req.clientId = crypto.createHash('sha256').update(validKey).digest('hex');
     next();
     return;
   }

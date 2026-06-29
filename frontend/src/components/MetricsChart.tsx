@@ -70,6 +70,7 @@ export const MetricsChart: React.FC<MetricsChartProps> = ({ theme = 'dark', sess
       });
   }, [sessionId]);
 
+
   return (
     <div 
       className="chart-container" 

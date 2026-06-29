@@ -49,12 +49,7 @@ export function deleteFolderRecursive(directoryPath) {
         }
       }
     });
-    try {
-      fs.rmdirSync(directoryPath);
-    } catch {
-      // Directory may be non-empty due to entries that could not be deleted;
-      // skip the error and leave the directory for manual cleanup.
-    }
+    fs.rmSync(directoryPath, { recursive: true, force: true });
   }
 }
 
@@ -73,7 +68,7 @@ export async function getFolderSize(dirPath) {
       }
     }
   } catch (err) {
-    // Ignore errors
+    console.warn(`getFolderSize: could not read path ${dirPath}: ${err.message}`);
   }
   return size;
 }

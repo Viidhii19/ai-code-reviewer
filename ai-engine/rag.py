@@ -175,6 +175,20 @@ def cleanup_stale_chunks(current_files: set, repo_url: Optional[str] = None) -> 
     }
 
 
+def delete_repo_chunks(repo_url: str) -> int:
+    """Delete ALL chunks for a given repository.
+
+    Removes every document in the tenant-isolated collection so that
+    re-analysing the same repo replaces old chunks instead of duplicating
+    them.  Returns the number of deleted chunks.
+    """
+    collection = _get_collection(repo_url)
+    all_ids = collection.get(limit=10**6)["ids"]
+    if all_ids:
+        collection.delete(ids=all_ids)
+    return len(all_ids)
+
+
 def delete_collection(repo_url: str) -> bool:
     """Delete a per-repo collection for cleanup on repo re-analysis."""
     client = _get_client()

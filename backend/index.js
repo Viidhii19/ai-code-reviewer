@@ -22,6 +22,7 @@ import { analyzeComplexity } from './utils/complexityAnalyzer.js';
 import { deleteFolderRecursive, getFolderSize } from './utils/fileHelper.js';
 import { verifyWebhookSignature } from './utils/signatureVerifier.js';
 import ReviewQueue from './utils/reviewQueue.js';
+import { scanFileContentForWarnings } from './utils/sanitizeFileContent.js';
 import { verifyPort } from './utils/envVerifier.js';
 import { mockAIReview } from './utils/mockAIReview.js';
 import AnalysisCache from './utils/analysisCache.js';
@@ -59,7 +60,7 @@ if (trustProxy) {
 // leftmost (client-controlled) value, allowing IP spoofing to bypass rate limits.
 
 // Enable CORS with explicit origin
-const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'http://localhost:3000,http://localhost:5173').split(',');
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'http://localhost:3000,http://localhost:5173').split(',').map(s => s.trim());
 app.use(cors({
   origin: ALLOWED_ORIGINS,
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
@@ -118,8 +119,38 @@ app.use(express.json({
 // CSRF token endpoint: generates a random token and sets it as a non-httpOnly cookie
 // so the frontend can read it and include it in the X-CSRF-Token header.
 const CSRF_COOKIE_NAME = 'csrf-token';
+const CSRF_TOKEN_TTL_MS = 30 * 60 * 1000; // 30 minutes
+const csrfTokenStore = new Map();
+
+// Periodic cleanup of expired CSRF tokens to prevent unbounded memory growth
+setInterval(() => {
+  const now = Date.now();
+  for (const [token, expiry] of csrfTokenStore) {
+    if (now > expiry) csrfTokenStore.delete(token);
+  }
+}, 5 * 60 * 1000);
+
 function generateCsrfToken() {
-  return crypto.randomBytes(32).toString('hex');
+  const token = crypto.randomBytes(32).toString('hex');
+  csrfTokenStore.set(token, Date.now() + CSRF_TOKEN_TTL_MS);
+  if (csrfTokenStore.size > 10000) {
+    const now = Date.now();
+    for (const [t, expiry] of csrfTokenStore) {
+      if (now > expiry) csrfTokenStore.delete(t);
+    }
+  }
+  return token;
+}
+
+function validateCsrfToken(token) {
+  if (!token) return false;
+  const expiry = csrfTokenStore.get(token);
+  if (!expiry) return false;
+  if (Date.now() > expiry) {
+    csrfTokenStore.delete(token);
+    return false;
+  }
+  return true;
 }
 
 // CSRF validation middleware for state-changing methods
@@ -151,6 +182,20 @@ function csrfProtection(req, res, next) {
       }
       return res.status(403).json({ error: 'CSRF validation failed.' });
     }
+    // Validate token expiry from store
+    if (!validateCsrfToken(headerToken)) {
+      return res.status(403).json({ error: 'CSRF token expired. Refresh and try again.' });
+    }
+    // Remove old token and rotate
+    csrfTokenStore.delete(headerToken);
+    const newToken = generateCsrfToken();
+    const csrfCookie = `${CSRF_COOKIE_NAME}=${newToken}; HttpOnly=false; SameSite=Strict; Path=/`;
+    const secureFlag = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+    const existingCookies = res.getHeader('Set-Cookie') || [];
+    const cookies = Array.isArray(existingCookies) ? existingCookies : [existingCookies];
+    res.setHeader('Set-Cookie', [...cookies, csrfCookie + secureFlag]);
+    // Expose new token in response for the frontend
+    res.locals.rotatedCsrfToken = newToken;
   }
   next();
 }
@@ -163,8 +208,21 @@ app.post('/api/session', requireApiKey, (req, res) => {
   if (!sessionCookie) return;
 
   const csrfToken = generateCsrfToken();
-  res.setHeader('Set-Cookie', [sessionCookie, `${CSRF_COOKIE_NAME}=${csrfToken}; HttpOnly=false; SameSite=Strict; Path=/`]);
+  const csrfCookie = `${CSRF_COOKIE_NAME}=${csrfToken}; HttpOnly=false; SameSite=Strict; Path=/`;
+  const secureFlag = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+  res.setHeader('Set-Cookie', [sessionCookie, csrfCookie + secureFlag]);
   return res.json({ success: true, csrfToken });
+});
+
+// Logout endpoint — clears session and CSRF token
+app.post('/api/logout', requireApiKey, (req, res) => {
+  const cookieToken = req.cookies?.[CSRF_COOKIE_NAME];
+  if (cookieToken) {
+    csrfTokenStore.delete(cookieToken);
+  }
+  res.clearCookie(CSRF_COOKIE_NAME, { path: '/' });
+  res.clearCookie('session', { path: '/' });
+  return res.json({ success: true, message: 'Logged out successfully.' });
 });
 
 // CSRF token retrieval for clients that need a fresh token
@@ -191,7 +249,7 @@ function cleanupTempRepos() {
     fs.rmSync(tempReposDir, { recursive: true, force: true });
   }
 }
-function onShutdown() { cleanupTempRepos(); cleanupTimers(); closeDatabase(); process.exit(0); }
+function onShutdown() { cleanupTempRepos(); cleanupTimers(); if (redisClient) redisClient.quit(); closeDatabase(); process.exit(0); }
 process.on('SIGINT', onShutdown);
 process.on('SIGTERM', onShutdown);
 
@@ -215,7 +273,6 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 120000) {
 const reviewQueue = new ReviewQueue();
 const processedDeliveries = new Map();
 const reviewedShas = new Map();
-const failedReviews = new Map();
 const DELIVERY_TTL = 60 * 60 * 1000;
 const MAX_DELIVERY_ENTRIES = 5000;
 
@@ -246,32 +303,9 @@ function cleanupTimers() {
   clearInterval(cacheMetricsTimer);
 }
 
-// Content-Type validation middleware for POST endpoints
-function requireJsonContentType(req, res, next) {
-  if (!req.is('application/json')) {
-    return res.status(415).json({ error: 'Content-Type must be application/json' });
-  }
-  next();
-}
-
-// 🟢 Route: GitHub Import & AI Review
-app.post('/api/analyze', requireApiKey, requireJsonContentType, analyzeLimiter, async (req, res) => {
-  let { repoUrl, company = 'General', language = 'English', model = 'llama-3.3-70b-versatile',temperature = 0.7,
-     maxTokens = 2048, systemPrompt = '', batchSize = 5
-   } = req.body;
-
-  // Enforce boundary limits for batchSize to prevent downstream parsing crashes
-  batchSize = Math.max(1, Math.min(20, parseInt(batchSize, 10) || 5));
-
-  if (!repoUrl) {
-    return res.status(400).json({ error: 'GitHub Repository URL is required.' });
-  }
-
-  if (!isValidRepoUrl(repoUrl)) {
-    return res.status(400).json({ error: 'Invalid GitHub repository URL. Only https://github.com/owner/repo URLs are allowed.' });
-  }
-
-  // Validate systemPrompt: reject prompts containing dangerous directives
+  // NOTE: This HOMOGLYPH_MAP, DANGEROUS_PHRASES list, and validation logic is
+  // duplicated in ai-engine/app.py. When modifying these definitions, update
+  // both files to keep them in sync and prevent security bypasses.
   const HOMOGLYPH_MAP = {
     '\u0430': 'a', '\u0435': 'e', '\u043E': 'o', '\u0441': 'c', '\u0440': 'p',
     '\u0445': 'x', '\u0443': 'y', '\u0432': 'b', '\u043D': 'h', '\u043A': 'k',
@@ -340,6 +374,42 @@ app.post('/api/analyze', requireApiKey, requireJsonContentType, analyzeLimiter, 
     }
     return normalized;
   }
+
+// Content-Type validation middleware for POST endpoints
+function requireJsonContentType(req, res, next) {
+  if (!req.is('application/json')) {
+    return res.status(415).json({ error: 'Content-Type must be application/json' });
+  }
+  next();
+}
+
+// 🟢 Route: GitHub Import & AI Review
+app.post('/api/analyze', requireApiKey, requireJsonContentType, analyzeLimiter, async (req, res) => {
+  let { repoUrl, company = 'General', language = 'English', model = 'llama-3.3-70b-versatile',temperature = 0.7,
+     maxTokens = 2048, systemPrompt = '', batchSize = 5
+   } = req.body;
+
+  // Enforce boundary limits for batchSize to prevent downstream parsing crashes
+  batchSize = Math.max(1, Math.min(20, parseInt(batchSize, 10) || 5));
+
+  temperature = Math.max(0, Math.min(2, parseFloat(temperature) || 0.7));
+
+  maxTokens = Math.max(1, Math.min(128000, parseInt(maxTokens, 10) || 2048));
+
+  const ALLOWED_ANALYSIS_MODELS = ["llama-3.3-70b-versatile", "deepseek-r1-distill-llama-70b", "llama-3.1-8b-instant", "gemma2-9b-it"];
+  if (!ALLOWED_ANALYSIS_MODELS.includes(model)) {
+    model = "llama-3.3-70b-versatile";
+  }
+
+  if (!repoUrl) {
+    return res.status(400).json({ error: 'GitHub Repository URL is required.' });
+  }
+
+  if (!isValidRepoUrl(repoUrl)) {
+    return res.status(400).json({ error: 'Invalid GitHub repository URL. Only https://github.com/owner/repo URLs are allowed.' });
+  }
+
+  // Validate systemPrompt: reject prompts containing dangerous directives
   let validatedPrompt;
   try {
     validatedPrompt = validatePrompt(systemPrompt);
@@ -363,6 +433,10 @@ app.post('/api/analyze', requireApiKey, requireJsonContentType, analyzeLimiter, 
       return res.status(413).json({ error: `Repository exceeds the maximum allowed size of ${maxRepoSizeMB}MB (Reported size: ~${Math.round(repoSizeBytes/1024/1024)}MB).` });
     }
   } catch (err) {
+    if (process.env.GITHUB_PAT && err.status !== 403 && err.status !== 429) {
+      console.error(`❌ GitHub API error verifying size for ${owner}/${repoName}: ${err.message}`);
+      return res.status(502).json({ error: `Failed to verify repository size: ${err.message}. Check GITHUB_PAT configuration.` });
+    }
     console.warn(`Could not verify repository size via GitHub API for ${owner}/${repoName}. Proceeding to clone with filters...`);
   }
 
@@ -403,6 +477,18 @@ app.post('/api/analyze', requireApiKey, requireJsonContentType, analyzeLimiter, 
       }
 
       console.log(`📁 Found ${files.length} valid source files. Checking cache...`);
+
+      // 1.3. Scan files for prompt injection patterns
+      const fileWarnings = [];
+      for (const file of files) {
+        const fileScanWarnings = scanFileContentForWarnings(file.content);
+        for (const warning of fileScanWarnings) {
+          fileWarnings.push({ file: file.name, warning });
+        }
+      }
+      if (fileWarnings.length > 0) {
+        console.warn(`⚠️ Found ${fileWarnings.length} potential prompt injection patterns across ${files.length} files`);
+      }
 
       // 1.5. Check analysis cache to avoid redundant LLM calls for identical analyses
       const cacheKey = analysisCache.generateKey(repoUrl, files, { model, language, company });
@@ -456,10 +542,6 @@ app.post('/api/analyze', requireApiKey, requireJsonContentType, analyzeLimiter, 
             if (!reviewResult.fileReviews[file.name]) {
               reviewResult.fileReviews[file.name] = { bugs: [], security: [], optimization: [], styling: [] };
             }
-            // Append found secrets to security category
-            if (!reviewResult.fileReviews[file.name].security) {
-              reviewResult.fileReviews[file.name].security = [];
-            }
             // Avoid duplicate additions
             secretFindings.forEach(finding => {
               const duplicate = reviewResult.fileReviews[file.name].security.some(s => s.line === finding.line && s.type === finding.type);
@@ -505,7 +587,27 @@ app.post('/api/analyze', requireApiKey, requireJsonContentType, analyzeLimiter, 
         console.warn(`⚠️ Session too large (${(estimatedSize / 1024 / 1024).toFixed(1)}MB), skipping persistence`);
       }
 
-      // 4. Compute and persist analytics
+      // 4. Ingest files into RAG vector store for semantic search (non-fatal)
+      try {
+        const baseUrl = (process.env.AI_ENGINE_URL || 'http://localhost:8000').replace(/\/+$/, '');
+        const splitResp = await fetchWithTimeout(`${baseUrl}/api/rag/split`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ files: storedFiles, repo_url: repoUrl })
+        }, 30000);
+        if (splitResp.ok) {
+          const { chunks } = await splitResp.json();
+          await fetchWithTimeout(`${baseUrl}/api/rag/ingest`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ repo_url: repoUrl, chunks })
+          }, 60000);
+        }
+      } catch (ragErr) {
+        console.warn('⚠️ RAG ingestion failed (non-fatal):', ragErr.message);
+      }
+
+      // 5. Compute and persist analytics
       let totalBugs = 0, totalSecurityIssues = 0, totalOptimizations = 0, totalStylingIssues = 0;
       if (reviewResult && reviewResult.fileReviews) {
         for (const file of Object.keys(reviewResult.fileReviews)) {
@@ -542,10 +644,10 @@ app.post('/api/analyze', requireApiKey, requireJsonContentType, analyzeLimiter, 
         }
       }
 
-      // 5. Clean up folder
+      // 6. Clean up folder
       await deleteFolderRecursive(clonePath);
       
-      // 6. Return result
+      // 7. Return result
       return res.json({
         success: true,
         repoName,
@@ -553,7 +655,8 @@ app.post('/api/analyze', requireApiKey, requireJsonContentType, analyzeLimiter, 
         analysis: reviewResult,
         sessionId,
         chatAvailable: sessionPersisted,
-        sessionPersisted
+        sessionPersisted,
+        ...(fileWarnings.length > 0 ? { warnings: fileWarnings } : {})
       });
 
     } catch (err) {
@@ -565,10 +668,17 @@ app.post('/api/analyze', requireApiKey, requireJsonContentType, analyzeLimiter, 
 
 // 🟢 Route: AI Chat with Repository (session-isolated per issue #59)
 app.post('/api/chat', requireApiKey, requireJsonContentType, chatLimiter, async (req, res) => {
-  const { message, history = [], model = 'llama-3.3-70b-versatile', temperature = 0.7, maxTokens = 2048, systemPrompt = 'You are a helpful code reviewer.', sessionId, useRag } = req.body;
+  const { message, history = [], model = 'llama-3.3-70b-versatile', temperature = 0.7, maxTokens = 2048, systemPrompt = 'You are a helpful code reviewer.', sessionId, useRag, ragSources } = req.body;
 
   if (!message) {
     return res.status(400).json({ error: 'Message is required.' });
+  }
+
+  let validatedPrompt;
+  try {
+    validatedPrompt = validatePrompt(systemPrompt);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
   }
 
   // Verify session ownership before entering the queue (issue #742).
@@ -580,7 +690,7 @@ app.post('/api/chat', requireApiKey, requireJsonContentType, chatLimiter, async 
         // Verify session ownership to prevent IDOR (issue #742):
         // only the client that created the session may access it.
         if (session.ownerToken && session.ownerToken !== req.clientId) {
-          console.warn(`⚠️ IDOR attempt: client ${req.clientId} tried to access session ${sessionId} owned by ${session.ownerToken}`);
+          console.warn(`⚠️ Session ownership mismatch: session ${sessionId} ownerToken=${session.ownerToken} request clientId=${req.clientId} (possible auth-method change or cookie refresh)`);
           return res.status(403).json({ error: 'Access denied: this session does not belong to you.' });
         }
         // Update lastAccessedAt for the sliding-window TTL (see issue #743).
@@ -633,9 +743,10 @@ app.post('/api/chat', requireApiKey, requireJsonContentType, chatLimiter, async 
             model,
             temperature,
             maxTokens,
-            systemPrompt,
+            systemPrompt: validatedPrompt,
             useRag,
-            repo_url: context.repoUrl
+            repo_url: context.repoUrl,
+            rag_sources: ragSources
           })
         }, 30000);
 
@@ -692,8 +803,30 @@ app.post('/api/rag/query', requireApiKey, async (req, res) => {
   }
 });
 
+// Per-repository rate limiting for webhooks
+const repoRequestCounts = new Map();
+const REPO_WINDOW_MS = 60 * 1000;
+const REPO_MAX_REQUESTS = 5;
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, { count, windowStart }] of repoRequestCounts) {
+    if (now - windowStart > REPO_WINDOW_MS) {
+      repoRequestCounts.delete(key);
+    }
+  }
+}, 60 * 1000);
+
+const webhookLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  store: redisClient ? new RedisStore({ sendCommand: (...args) => redisClient.call(...args) }) : undefined,
+  message: { error: 'Too many webhook requests.' }
+});
+
 // 🟢 Route: GitHub Webhook Receiver for automated Pull Request Reviews
-app.post('/api/webhook', async (req, res) => {
+app.post('/api/webhook', webhookLimiter, async (req, res) => {
   const webhookSecret = process.env.WEBHOOK_SECRET;
   if (!webhookSecret) {
     console.error('❌ WEBHOOK_SECRET not configured');
@@ -713,15 +846,26 @@ app.post('/api/webhook', async (req, res) => {
   const event = req.headers['x-github-event'];
   const payload = req.body;
 
-    if (event === 'pull_request') {
+  if (!event || typeof event !== 'string') {
+    return res.status(400).json({ error: 'Missing x-github-event header.' });
+  }
+  if (!payload || typeof payload !== 'object') {
+    return res.status(400).json({ error: 'Invalid webhook payload.' });
+  }
+  if (event !== 'pull_request' && event !== 'push' && event !== 'ping') {
+    return res.status(400).json({ error: `Unsupported webhook event: ${event}` });
+  }
+
+  if (event === 'pull_request') {
     const deliveryId = req.headers['x-github-delivery'];
-    if (deliveryId) {
-      if (processedDeliveries.has(deliveryId)) {
-        console.log(`⏭️ Skipping duplicate webhook delivery: ${deliveryId}`);
-        return res.json({ success: true, message: 'Webhook received (duplicate skipped).' });
-      }
-      processedDeliveries.set(deliveryId, Date.now());
+    if (!deliveryId || typeof deliveryId !== 'string') {
+      return res.status(400).json({ error: 'Missing x-github-delivery header.' });
     }
+    if (processedDeliveries.has(deliveryId)) {
+      console.log(`⏭️ Skipping duplicate webhook delivery: ${deliveryId}`);
+      return res.json({ success: true, message: 'Webhook received (duplicate skipped).' });
+    }
+    processedDeliveries.set(deliveryId, Date.now());
 
     const action = payload.action;
     if (action === 'opened' || action === 'synchronize') {
@@ -740,7 +884,7 @@ app.post('/api/webhook', async (req, res) => {
         return res.json({ success: true, message: 'Webhook received (duplicate SHA skipped).' });
       }
       reviewedShas.get(shaKey).add(headSha);
-      setTimeout(() => {
+      const shaTimeout = setTimeout(() => {
         const set = reviewedShas.get(shaKey);
         if (set) {
           set.delete(headSha);
@@ -749,18 +893,42 @@ app.post('/api/webhook', async (req, res) => {
           }
         }
       }, 3600000);
+      shaTimeout.unref();
       
       console.log(`📡 GitHub Webhook received: PR #${pullNumber} ${action} (${headSha.substring(0,7)}) in ${owner}/${repo}`);
-      
+
+      if (reviewQueue._queues.size >= reviewQueue._maxQueues) {
+        return res.status(429).json({ error: 'Too many pending reviews. Try again later.' });
+      }
+
+      // Per-repository rate limiting
+      const repoKey = `${owner}/${repo}`;
+      const now = Date.now();
+      const repoEntry = repoRequestCounts.get(repoKey) || { count: 0, windowStart: now };
+      if (now - repoEntry.windowStart > REPO_WINDOW_MS) {
+        repoEntry.count = 0;
+        repoEntry.windowStart = now;
+      }
+      repoEntry.count++;
+      repoRequestCounts.set(repoKey, repoEntry);
+      if (repoEntry.count > REPO_MAX_REQUESTS) {
+        console.warn(`⚠️ Rate limit exceeded for repository ${repoKey}`);
+        return res.status(429).json({ error: 'Too many requests for this repository. Try again later.' });
+      }
+
       reviewQueue.enqueue(reviewKey, { owner, repo, pullNumber, headSha }, async (item) => {
         try {
           await runWebhookReview(item.owner, item.repo, item.pullNumber, item.headSha);
         } catch (error) {
           console.error(`❌ Webhook review failed for ${headSha}:`, error.message);
-          const failedSet = failedReviews.get(shaKey) || new Set();
-          failedSet.add(headSha);
-          failedReviews.set(shaKey, failedSet);
-          throw error;
+          // Remove SHA from reviewedShas so it can be retried on next delivery
+          const shaSet = reviewedShas.get(shaKey);
+          if (shaSet) {
+            shaSet.delete(headSha);
+            if (shaSet.size === 0) {
+              reviewedShas.delete(shaKey);
+            }
+          }
         }
       });
     }
@@ -849,15 +1017,24 @@ async function runWebhookReview(owner, repo, pullNumber, headSha) {
   const octokit = new Octokit({ auth: token });
   console.log(`🔍 Fetching diff for PR #${pullNumber}...`);
 
-  // 1. Fetch Diff from GitHub, pinned to the specific commit that triggered the event
+  const { data: pullRequest } = await octokit.rest.pulls.get({
+    owner,
+    repo,
+    pull_number: pullNumber
+  });
+  if (headSha && pullRequest.head.sha !== headSha) {
+    console.log(`⏭️ Skipping stale review ${headSha.substring(0, 7)}; current head is ${pullRequest.head.sha.substring(0, 7)}.`);
+    return;
+  }
+
+  // 1. Fetch the diff for the verified current pull-request head.
   const { data: diff } = await octokit.rest.pulls.get({
     owner,
     repo,
     pull_number: pullNumber,
     mediaType: {
       format: 'diff'
-    },
-    ...(headSha && { commit_id: headSha })
+    }
   });
 
   if (!diff) {
@@ -866,7 +1043,7 @@ async function runWebhookReview(owner, repo, pullNumber, headSha) {
   }
 
   // 2. Parse files and changes
-  const parsedFiles = parseDiff(diff);
+  const { files: parsedFiles, binaryFiles: parsedBinaryFiles } = parseDiff(diff);
   console.log(`📁 Found ${parsedFiles.length} files in PR diff.`);
 
   const commentsToPost = [];
@@ -909,11 +1086,11 @@ async function runWebhookReview(owner, repo, pullNumber, headSha) {
     
     try {
       const baseUrl = aiEngineUrl.replace(/\/+$/, '');
-      const aiResponse = await fetch(`${baseUrl}/review-diff`, {
+      const aiResponse = await fetchWithTimeout(`${baseUrl}/review-diff`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ files: filesToReview })
-      });
+      }, 60000);
 
       if (aiResponse.ok) {
         const result = await aiResponse.json();
@@ -995,11 +1172,13 @@ Please ensure the AI Engine service is running and re-trigger the review for a c
 
 // Helper to sanitize repository name for report filenames
 function sanitizeFilename(repoName) {
-  const str = String(repoName);
-  if (str === '../../../etc/passwd') return '_____etc_passwd';
-  if (str === '../admin') return '___admin';
-  if (str === '!@#$%^&*()') return '_________';
-  return str.replace(/\.\.+/g, '_').replace(/[^\w.-]+/g, '_');
+  let str = String(repoName);
+  // Normalize path separators and collapse them
+  str = str.replace(/[/\\]+/g, '/').replace(/\.\.\/|\.\\/g, '');
+  // Remove any residual path traversal patterns and non-filename characters
+  str = str.replace(/\.\.+/g, '_').replace(/(?:^|\/)[.]+(?=\/|$)/g, '_');
+  str = str.replace(/[^\w.-]+/g, '_');
+  return str;
 }
 
 // 🟢 Route: Export Review Report to HTML
