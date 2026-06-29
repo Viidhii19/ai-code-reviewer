@@ -41,6 +41,46 @@ const analyticsSchema = new mongoose.Schema({
     type: Number,
     default: 100,
   },
+  repositoryHealth: {
+  score: {
+    type: Number,
+    default: 100,
+  },
+  prSummary: {
+  overallPurpose: {
+    type: String,
+    default: "",
+  },
+  filesChanged: {
+    type: Number,
+    default: 0,
+  },
+  majorLogicUpdates: {
+    type: [String],
+    default: [],
+  },
+  potentialRisks: {
+    type: [String],
+    default: [],
+  },
+  breakingChanges: {
+    type: [String],
+    default: [],
+  },
+  testingRecommendations: {
+    type: [String],
+    default: [],
+  },
+},
+dependencyReport: {
+  type: Array,
+  default: [],
+},
+  grade: {
+    type: String,
+    default: "A",
+  },
+},
   language: {
     type: String,
     default: 'General',
