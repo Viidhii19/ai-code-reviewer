@@ -78,6 +78,16 @@ export function readFilesRecursively(dir, fileList = [], baseDir = dir, ignorePa
     }
 
     if (stat.isDirectory()) {
+      // Resolve real paths to prevent directory junction/symlink traversal outside the cloned repo
+      try {
+        const realPath = fs.realpathSync(filePath);
+        const resolvedBase = fs.realpathSync(baseDir);
+        if (!realPath.startsWith(resolvedBase)) {
+          continue;
+        }
+      } catch {
+        continue;
+      }
       readFilesRecursively(filePath, fileList, baseDir, ignorePatterns, depth + 1);
     } else {
       // Analyze only source code files (Python, JS, TS, HTML, CSS, Go, Rust, Java, C++, PHP, Ruby, SQL)

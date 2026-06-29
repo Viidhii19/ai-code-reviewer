@@ -429,6 +429,7 @@ app.post('/api/analyze', requireApiKey, requireJsonContentType, analyzeLimiter, 
   // Generate unique folder name (needed early for logging/caching)
   const parsed = parseRepoUrl(repoUrl);
   const repoName = parsed.repo;
+  const safeRepoName = repoName.replace(/[^a-zA-Z0-9_-]/g, '_');
   const owner = parsed.owner;
   const maxRepoSizeMB = parseInt(process.env.MAX_REPO_SIZE_MB) || 100;
   const maxSizeBytes = maxRepoSizeMB * 1024 * 1024;
@@ -450,7 +451,7 @@ app.post('/api/analyze', requireApiKey, requireJsonContentType, analyzeLimiter, 
   }
 
   const uniqueId = crypto.randomUUID();
-  const clonePath = path.join(tempReposDir, `${repoName}_${uniqueId}`);
+  const clonePath = path.join(tempReposDir, `${safeRepoName}_${uniqueId}`);
 
   console.log(`🚀 Cloning: ${repoUrl} into ${clonePath}`);
 
@@ -1298,6 +1299,10 @@ Please ensure the AI Engine service is running and re-trigger the review for a c
 // Helper to sanitize repository name for report filenames
 function sanitizeFilename(repoName) {
   let str = String(repoName);
+  // Remove null bytes
+  str = str.replace(/\0/g, '');
+  // Normalize Unicode (NFD decomposition then strip combining marks)
+  str = str.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
   // Normalize path separators and collapse them
   str = str.replace(/[/\\]+/g, '/').replace(/\.\.\/|\.\\/g, '');
   // Remove any residual path traversal patterns and non-filename characters
