@@ -137,6 +137,12 @@ export const apiFetch = async (
     clearTimeout(timeoutId);
   }
 };
+export const getReviewHistory = async () => {
+  const response = await apiFetch("/api/review-history");
+  if (!response.ok) throw new Error("Failed to fetch review history");
+  return response.json();
+};
+
 export const getFixSuggestions = async (findingId: string) => {
   const response = await apiFetch(`/api/fix-suggestions/${findingId}`);
 
