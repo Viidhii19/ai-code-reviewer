@@ -2743,7 +2743,7 @@ export default function Dashboard() {
                                 : 0;
                             const emptyPct =
                               fileMetrics.totalLines > 0
-                                ? 100 - codePct - commentPct
+                                ? Math.max(0, 100 - codePct - commentPct)
                                 : 0;
 
                             const gradeColors = {
