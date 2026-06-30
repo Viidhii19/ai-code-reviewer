@@ -20,7 +20,7 @@ export const useStore = create<GlobalState>((set) => ({
   chatHistory: (() => { try { const saved = localStorage.getItem('reposage_chat_history'); if (saved) { const parsed = JSON.parse(saved); return Array.isArray(parsed) ? parsed : []; } return []; } catch { return []; } })(),
   setChatHistory: (updater) => set((state) => {
     const updated = typeof updater === 'function' ? updater(state.chatHistory) : updater;
-    try { localStorage.setItem("reposage_chat_history", JSON.stringify(updated)); } catch {}
+    try { localStorage.setItem("reposage_chat_history", JSON.stringify(updated)); } catch (e) { console.warn('Failed to persist chat history to localStorage:', e); }
     return { chatHistory: updated };
   }),
 }));
