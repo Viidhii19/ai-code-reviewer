@@ -178,6 +178,8 @@ function MermaidViewer({ chart, repoName }: MermaidViewerProps) {
     return () => { cancelled = true; };
   }, [chart]);
 
+  if (!chart) return null;
+
   const svgDataUrl = svg
     ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`
     : null;
@@ -317,6 +319,16 @@ export default function Dashboard() {
   const [activeExtFilter, setActiveExtFilter] = useState('All');
   const [activeTab, setActiveTab] = useState<'bugs' | 'security' | 'optimization' | 'styling' | 'metrics'>('bugs');
   const [apiError, setApiError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!apiError) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setApiError(null);
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [apiError]);
+
   const [auditHistory, setAuditHistory] = useState<AuditHistoryEntry[]>(() => {
     try {
       const savedHistory = localStorage.getItem('reposage_audit_history');
@@ -642,7 +654,7 @@ export default function Dashboard() {
     setChatInput("");
     setChatHistory((prev) => {
       const updated = [...prev, { role: "user" as const, content: userMessage }];
-      try { localStorage.setItem(CHAT_HISTORY_KEY, JSON.stringify(updated)); } catch {}
+      try { localStorage.setItem(CHAT_HISTORY_KEY, JSON.stringify(truncateChatHistory(updated))); } catch {}
       return updated;
     });
     setIsChatLoading(true);
@@ -808,6 +820,7 @@ export default function Dashboard() {
   const loadAuditFromHistory = (entry: AuditHistoryEntry) => {
     setRepoUrl(entry.repoUrl);
     setAnalysisResult(entry.response);
+    setSessionId(entry.response.sessionId ?? null);
     setApiError(null);
     setIsLoading(false);
     setActiveDashboardView('audit');
@@ -880,11 +893,9 @@ export default function Dashboard() {
 
       const data: BackendResponse = await response.json();
       setAnalysisResult(data);
-      if (data.sessionId && data.sessionPersisted !== false) {
-        setSessionId(data.sessionId);
-      } else if (data.sessionId && data.sessionPersisted === false) {
-        setSessionId(null);
-      }
+      setSessionId(
+        data.sessionPersisted !== false ? data.sessionId ?? null : null
+      );
       persistAuditHistory(data);
       setChatHistory([]);
 
@@ -987,6 +998,7 @@ export default function Dashboard() {
                   pattern="https://github\.com/.*"
                   placeholder="https://github.com/username/repo"
                   value={repoUrl}
+                  readOnly={isLoading}
                   onChange={(e) => setRepoUrl(e.target.value)}
                   style={{
                     width: "100%",
@@ -1123,7 +1135,8 @@ export default function Dashboard() {
                   width: "100%",
                   padding: "12px",
                   borderRadius: "6px",
-                  cursor: "pointer",
+                  cursor: isLoading ? "not-allowed" : "pointer",
+                  opacity: isLoading ? 0.65 : 1,
                   fontSize: "13px",
                   marginTop: "6px",
                   display: "flex",
@@ -2551,6 +2564,7 @@ export default function Dashboard() {
                       >
                         <button
                           onClick={() => setActiveTab("bugs")}
+                          aria-current={activeTab === "bugs" ? "true" : undefined}
                           style={{
                             padding: "6px",
                             borderRadius: "6px",
@@ -2577,6 +2591,7 @@ export default function Dashboard() {
                         </button>
                         <button
                           onClick={() => setActiveTab("security")}
+                          aria-current={activeTab === "security" ? "true" : undefined}
                           style={{
                             padding: "6px",
                             borderRadius: "6px",
@@ -2604,6 +2619,7 @@ export default function Dashboard() {
                         </button>
                         <button
                           onClick={() => setActiveTab("optimization")}
+                          aria-current={activeTab === "optimization" ? "true" : undefined}
                           style={{
                             padding: "6px",
                             borderRadius: "6px",
@@ -2633,6 +2649,7 @@ export default function Dashboard() {
                         </button>
                         <button
                           onClick={() => setActiveTab("styling")}
+                          aria-current={activeTab === "styling" ? "true" : undefined}
                           style={{
                             padding: "6px",
                             borderRadius: "6px",
@@ -2660,6 +2677,7 @@ export default function Dashboard() {
                         </button>
                         <button
                           onClick={() => setActiveTab("metrics")}
+                          aria-current={activeTab === "metrics" ? "true" : undefined}
                           style={{
                             padding: "6px",
                             borderRadius: "6px",

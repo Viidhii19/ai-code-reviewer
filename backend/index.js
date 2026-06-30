@@ -8,7 +8,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { Octokit } from '@octokit/rest';
-import { createFrontendSessionCookie, requireApiKey } from './utils/authMiddleware.js';
+import { createFrontendSessionCookie, requireApiKey, SESSION_COOKIE_NAME } from './utils/authMiddleware.js';
 import rateLimit from 'express-rate-limit';
 import RedisStore from 'rate-limit-redis';
 import Redis from 'ioredis';
@@ -119,6 +119,7 @@ app.use(cookieParser());
 
 // Capture raw body for webhook signature verification before JSON parsing
 app.use(express.json({
+  limit: process.env.JSON_BODY_LIMIT || '5mb',
   verify: (req, _res, buf) => {
     req.rawBody = buf;
   }
@@ -128,13 +129,18 @@ app.use(express.json({
 // so the frontend can read it and include it in the X-CSRF-Token header.
 const CSRF_COOKIE_NAME = 'csrf-token';
 const CSRF_TOKEN_TTL_MS = 30 * 60 * 1000; // 30 minutes
+const CSRF_ROTATION_GRACE_MS = 10 * 1000; // allow in-flight concurrent requests
 const csrfTokenStore = new Map();
+const csrfGraceTokenStore = new Map();
 
 // Periodic cleanup of expired CSRF tokens to prevent unbounded memory growth
 setInterval(() => {
   const now = Date.now();
   for (const [token, expiry] of csrfTokenStore) {
     if (now > expiry) csrfTokenStore.delete(token);
+  }
+  for (const [token, expiry] of csrfGraceTokenStore) {
+    if (now > expiry) csrfGraceTokenStore.delete(token);
   }
 }, 5 * 60 * 1000);
 
@@ -160,12 +166,19 @@ function generateCsrfToken() {
 function validateCsrfToken(token) {
   if (!token) return false;
   const expiry = csrfTokenStore.get(token);
-  if (!expiry) return false;
-  if (Date.now() > expiry) {
+  const graceExpiry = csrfGraceTokenStore.get(token);
+  const now = Date.now();
+  if (!expiry && !graceExpiry) return false;
+  if (expiry && now > expiry) {
     csrfTokenStore.delete(token);
+  } else if (expiry) {
+    return true;
+  }
+  if (graceExpiry && now > graceExpiry) {
+    csrfGraceTokenStore.delete(token);
     return false;
   }
-  return true;
+  return Boolean(graceExpiry);
 }
 
 // CSRF validation middleware for state-changing methods
@@ -201,8 +214,12 @@ function csrfProtection(req, res, next) {
     if (!validateCsrfToken(headerToken)) {
       return res.status(403).json({ error: 'CSRF token expired. Refresh and try again.' });
     }
-    // Remove old token and rotate
-    csrfTokenStore.delete(headerToken);
+    // Remove old token and rotate. Keep the previous token briefly so
+    // legitimate in-flight concurrent requests do not fail after one request
+    // rotates the CSRF cookie.
+    if (csrfTokenStore.delete(headerToken)) {
+      csrfGraceTokenStore.set(headerToken, Date.now() + CSRF_ROTATION_GRACE_MS);
+    }
     const newToken = generateCsrfToken();
     const csrfCookie = `${CSRF_COOKIE_NAME}=${newToken}; SameSite=Strict; Path=/`;
     const secureFlag = process.env.NODE_ENV === 'production' ? '; Secure' : '';
@@ -234,9 +251,10 @@ app.post('/api/logout', requireApiKey, (req, res) => {
   const cookieToken = req.cookies?.[CSRF_COOKIE_NAME];
   if (cookieToken) {
     csrfTokenStore.delete(cookieToken);
+    csrfGraceTokenStore.delete(cookieToken);
   }
   res.clearCookie(CSRF_COOKIE_NAME, { path: '/' });
-  res.clearCookie('session', { path: '/' });
+  res.clearCookie(SESSION_COOKIE_NAME, { path: '/' });
   return res.json({ success: true, message: 'Logged out successfully.' });
 });
 
@@ -1185,6 +1203,7 @@ async function runWebhookReview(owner, repo, pullNumber, headSha) {
 
   const commentsToPost = [];
   const filesToReview = [];
+  const validChangedLines = new Map();
 
   for (const file of parsedFiles) {
     // Check if file is supported
@@ -1193,6 +1212,7 @@ async function runWebhookReview(owner, repo, pullNumber, headSha) {
     if (!ext || !validExtensions.includes(ext) || file.changes.length === 0) {
       continue;
     }
+    validChangedLines.set(file.path, new Set(file.changes.map(change => change.line)));
 
     // Run local secrets scanner
     const { findings: secretFindings, truncated: scanTruncated, totalChanges: scanTotal, skippedReason: scanReason } = scanSecretsInChanges(file.changes);
@@ -1233,6 +1253,11 @@ async function runWebhookReview(owner, repo, pullNumber, headSha) {
         const result = await aiResponse.json();
         if (result.comments && Array.isArray(result.comments)) {
           result.comments.forEach(c => {
+            const validLines = validChangedLines.get(c.path);
+            if (!validLines || !validLines.has(Number(c.line))) {
+              console.warn(`⚠️ Skipping invalid inline comment location ${c.path}:${c.line}`);
+              return;
+            }
             // Avoid duplicate comments if secrets scanner already flagged it
             const duplicate = commentsToPost.some(exist => exist.path === c.path && exist.line === c.line);
             if (!duplicate) {
@@ -1614,7 +1639,7 @@ app.get('/api/analytics/trends', requireApiKey, async (req, res) => {
     };
 
     if (req.query.sessionId) {
-      matchFilter.sessionId = req.query.sessionId;
+      matchFilter.sessionId = String(req.query.sessionId);
     }
 
     const trends = await Analytics.aggregate([

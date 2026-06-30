@@ -647,6 +647,7 @@ async def chat_with_repository(request: ChatRequest):
 
     # 2. Optionally retrieve RAG chunks if toggle is on
     rag_context = ""
+    rag_sources = []
     if request.useRag:
         try:
             from rag import query_chunks
@@ -657,6 +658,13 @@ async def chat_with_repository(request: ChatRequest):
                     meta = c.get("metadata", {})
                     source = meta.get("file_path", meta.get("source", "unknown"))
                     chunk_parts.append(f"[Chunk {i} from {source}]\n{c['content']}")
+                    rag_sources.append({
+                        "chunk_id": c.get("chunk_id"),
+                        "source": source,
+                        "metadata": meta,
+                        "similarity_score": c.get("similarity_score"),
+                        "preview": c.get("content", "")[:300],
+                    })
                 rag_context = "\n\n".join(chunk_parts)
         except Exception as e:
             print(f"⚠️ RAG query failed: {e}")
@@ -721,7 +729,9 @@ Guidelines:
         )
         response_content = completion.choices[0].message.content
         result = {"response": sanitize_ai_output(response_content), "truncatedFiles": truncated_files_info}
-        if request.rag_sources:
+        if rag_sources:
+            result["sources"] = rag_sources
+        elif request.rag_sources:
             result["sources"] = request.rag_sources
         if request.useRag and is_fallback_active():
             result["_rag_warning"] = "Embedding model is using deterministic fallback. RAG results may be inaccurate."
