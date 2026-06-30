@@ -428,7 +428,7 @@ app.post('/api/analyze', requireApiKey, requireJsonContentType, analyzeLimiter, 
 
   // Generate unique folder name (needed early for logging/caching)
   const parsed = parseRepoUrl(repoUrl);
-  const repoName = parsed.repo;
+  const repoName = parsed.repo.replace(/[^a-zA-Z0-9_-]/g, '');
   const owner = parsed.owner;
   const maxRepoSizeMB = parseInt(process.env.MAX_REPO_SIZE_MB) || 100;
   const maxSizeBytes = maxRepoSizeMB * 1024 * 1024;
@@ -501,41 +501,36 @@ app.post('/api/analyze', requireApiKey, requireJsonContentType, analyzeLimiter, 
 
       // 1.5. Check analysis cache to avoid redundant LLM calls for identical analyses
       const cacheKey = analysisCache.generateKey(repoUrl, files, { model, language, company, systemPrompt: validatedPrompt, temperature, maxTokens, batchSize });
-      let reviewResult = analysisCache.get(cacheKey);
-      let cacheHit = false;
-
-      if (reviewResult) {
-        cacheHit = true;
+      let cacheHit = !!analysisCache.get(cacheKey);
+      if (cacheHit) {
         console.log(`🎯 Using cached analysis result for this repository and configuration`);
-      } else {
-        // 2. Mocking AI Response for initial setup (or forward to FastAPI AI Engine)
-        // This is a perfect placeholder where contributors can connect the FastAPI server!
-        const aiEngineUrl = process.env.AI_ENGINE_URL || 'http://localhost:8000';
+      }
 
+      let reviewResult = await analysisCache.getOrSet(cacheKey, async () => {
+        // 2. Mocking AI Response for initial setup (or forward to FastAPI AI Engine)
+        const aiEngineUrl = process.env.AI_ENGINE_URL || 'http://localhost:8000';
         const baseUrl = aiEngineUrl.replace(/\/+$/, '');
         try {
           const aiResponse = await fetchWithTimeout(`${baseUrl}/analyze`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.REPOSAGE_API_KEY || '' },
             body: JSON.stringify({ files, company, language, model, temperature, maxTokens, systemPrompt: validatedPrompt, batchSize })
           }, 120000);
 
           if (aiResponse.ok) {
-            reviewResult = await aiResponse.json();
-            reviewResult._mock = false;
+            const resData = await aiResponse.json();
+            resData._mock = false;
+            return resData;
           } else {
             throw new Error('AI engine responded with error');
           }
         } catch (err) {
           console.warn('⚠️ FastAPI engine not running, falling back to local Express review handler');
-          // Explicitly run local mock engine
-          reviewResult = mockAIReview(files, model);
-          reviewResult._mock = true;
+          const mockRes = mockAIReview(files, model);
+          mockRes._mock = true;
+          return mockRes;
         }
-
-        // Cache the result for future identical analyses
-        analysisCache.set(cacheKey, reviewResult);
-      }
+      });
 
       // 3. Inject Regex-based Secret Detections & Complexity Metrics into the analysis result
       if (reviewResult && reviewResult.fileReviews) {
@@ -860,7 +855,7 @@ app.post('/api/chat', requireApiKey, requireJsonContentType, chatLimiter, async 
         const baseUrl = aiEngineUrl.replace(/\/+$/, '');
         const aiResponse = await fetchWithTimeout(`${baseUrl}/chat`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.REPOSAGE_API_KEY || '' },
           body: JSON.stringify({
             files: context.files,
             message,
@@ -1297,7 +1292,7 @@ Please ensure the AI Engine service is running and re-trigger the review for a c
 
 // Helper to sanitize repository name for report filenames
 function sanitizeFilename(repoName) {
-  let str = String(repoName);
+  let str = String(repoName).replace(/\0/g, '');
   // Normalize path separators and collapse them
   str = str.replace(/[/\\]+/g, '/').replace(/\.\.\/|\.\\/g, '');
   // Remove any residual path traversal patterns and non-filename characters

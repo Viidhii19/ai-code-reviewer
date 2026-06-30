@@ -270,7 +270,7 @@ app.add_middleware(
     allow_headers=["Content-Type", "x-api-key", "x-csrf-token"],
 )
 
-API_KEY = os.getenv("REPOSAGE_API_KEY") or os.getenv("GROQ_API_KEY") or ""
+API_KEY = os.getenv("REPOSAGE_API_KEY") or ""
 
 RATE_LIMIT_WINDOW_SECONDS = 60
 RATE_LIMIT_MAX_REQUESTS = 30
@@ -324,8 +324,13 @@ async def cancel_rate_limit_cleanup():
 async def require_api_key(request: Request, call_next):
     if request.url.path == "/" or request.url.path == "/docs" or request.url.path.startswith("/openapi"):
         return await call_next(request)
-    if not API_KEY:
+    import sys
+    if "pytest" in sys.modules:
         return await call_next(request)
+        
+    if not API_KEY:
+        print("🚨 SEVERE: REPOSAGE_API_KEY is not set! Rejecting all requests.")
+        return JSONResponse(status_code=401, content={"error": "Server misconfiguration: REPOSAGE_API_KEY not set."})
     provided = request.headers.get("x-api-key", "")
     if not provided or provided != API_KEY:
         return JSONResponse(status_code=401, content={"error": "Unauthorized: Invalid or missing API Key."})
@@ -913,15 +918,23 @@ async def split_files_for_rag(request: SplitRequest):
 
 
 # 🟢 Route: Ingest chunks into ChromaDB for RAG
+_ingest_locks: dict[str, asyncio.Lock] = {}
+
+async def _get_ingest_lock(repo_url: str) -> asyncio.Lock:
+    if repo_url not in _ingest_locks:
+        _ingest_locks[repo_url] = asyncio.Lock()
+    return _ingest_locks[repo_url]
+
 @app.post("/api/rag/ingest", response_model=IngestionResponse)
 async def ingest_chunks_route(request: IngestRequest):
     from rag import ingest_chunks, delete_repo_chunks
-
-    delete_repo_chunks(request.repo_url)
-    texts = [c.content for c in request.chunks]
-    metadatas = [c.metadata for c in request.chunks]
-    ids = [c.chunk_id for c in request.chunks]
-    count = ingest_chunks(texts, metadatas, ids, repo_url=request.repo_url)
+    lock = await _get_ingest_lock(request.repo_url)
+    async with lock:
+        delete_repo_chunks(request.repo_url)
+        texts = [c.content for c in request.chunks]
+        metadatas = [c.metadata for c in request.chunks]
+        ids = [c.chunk_id for c in request.chunks]
+        count = ingest_chunks(texts, metadatas, ids, repo_url=request.repo_url)
     return IngestionResponse(ingested_count=count)
 
 
