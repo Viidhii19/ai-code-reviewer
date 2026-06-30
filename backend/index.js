@@ -629,14 +629,14 @@ app.post('/api/analyze', requireApiKey, requireJsonContentType, analyzeLimiter, 
         const baseUrl = (process.env.AI_ENGINE_URL || 'http://localhost:8000').replace(/\/+$/, '');
         const splitResp = await fetchWithTimeout(`${baseUrl}/api/rag/split`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.REPOSAGE_API_KEY || '' },
           body: JSON.stringify({ files: storedFiles, repo_url: repoUrl })
         }, 30000);
         if (splitResp.ok) {
           const { chunks } = await splitResp.json();
           await fetchWithTimeout(`${baseUrl}/api/rag/ingest`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.REPOSAGE_API_KEY || '' },
             body: JSON.stringify({ repo_url: repoUrl, chunks })
           }, 60000);
         }
