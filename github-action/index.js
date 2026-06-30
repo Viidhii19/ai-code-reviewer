@@ -3,40 +3,7 @@ import github from '@actions/github';
 import Groq from 'groq-sdk';
 import { parseDiff } from './utils/diffParser.js';
 import { scanSecretsInChanges } from './utils/secretsScanner.js';
-
-function globToRegex(pattern) {
-  let regexStr = '^';
-  let i = 0;
-  while (i < pattern.length) {
-    const ch = pattern[i];
-    if (ch === '*') {
-      if (i + 1 < pattern.length && pattern[i + 1] === '*') {
-        regexStr += '.*';
-        i += 2;
-        if (i < pattern.length && pattern[i] === '/') {
-          i++;
-        }
-      } else {
-        regexStr += '[^/]*';
-        i++;
-      }
-    } else if (ch === '?') {
-      regexStr += '[^/]';
-      i++;
-    } else if (ch === '.') {
-      regexStr += '\\.';
-      i++;
-    } else if (ch === '/') {
-      regexStr += '/';
-      i++;
-    } else {
-      regexStr += ch;
-      i++;
-    }
-  }
-  regexStr += '$';
-  return new RegExp(regexStr);
-}
+import { globToRegex } from './utils/globToRegex.js';
 
 function cleanAndParseJSON(responseText) {
   try {
