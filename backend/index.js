@@ -8,7 +8,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { Octokit } from '@octokit/rest';
-import { createFrontendSessionCookie, requireApiKey } from './utils/authMiddleware.js';
+import { createFrontendSessionCookie, requireApiKey, SESSION_COOKIE_NAME } from './utils/authMiddleware.js';
 import rateLimit from 'express-rate-limit';
 import RedisStore from 'rate-limit-redis';
 import Redis from 'ioredis';
@@ -253,7 +253,7 @@ app.post('/api/logout', requireApiKey, (req, res) => {
     csrfGraceTokenStore.delete(cookieToken);
   }
   res.clearCookie(CSRF_COOKIE_NAME, { path: '/' });
-  res.clearCookie('session', { path: '/' });
+  res.clearCookie(SESSION_COOKIE_NAME, { path: '/' });
   return res.json({ success: true, message: 'Logged out successfully.' });
 });
 
