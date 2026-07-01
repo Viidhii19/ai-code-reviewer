@@ -462,7 +462,8 @@ app.post('/api/analyze', requireApiKey, requireJsonContentType, analyzeLimiter, 
 
   // Generate unique folder name (needed early for logging/caching)
   const parsed = parseRepoUrl(repoUrl);
-  const repoName = parsed.repo.replace(/[^a-zA-Z0-9_-]/g, '');
+  const repoName = parsed.repo;
+  const safeRepoDirName = repoName.replace(/[^a-zA-Z0-9_-]/g, '') || 'repo';
   const owner = parsed.owner;
   const maxRepoSizeMB = parseInt(process.env.MAX_REPO_SIZE_MB) || 100;
   const maxSizeBytes = maxRepoSizeMB * 1024 * 1024;
@@ -484,7 +485,7 @@ app.post('/api/analyze', requireApiKey, requireJsonContentType, analyzeLimiter, 
   }
 
   const uniqueId = crypto.randomUUID();
-  const clonePath = path.join(tempReposDir, `${repoName}_${uniqueId}`);
+  const clonePath = path.join(tempReposDir, `${safeRepoDirName}_${uniqueId}`);
 
   console.log(`🚀 Cloning: ${repoUrl} into ${clonePath}`);
 
