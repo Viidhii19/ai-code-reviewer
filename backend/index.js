@@ -1088,7 +1088,6 @@ app.post('/api/webhook', webhookLimiter, async (req, res) => {
       const reviewKey = `${owner}/${repo}/#${pullNumber}`;
 
       const shaKey = `${owner}/${repo}/#${pullNumber}`;
-      // Check and mark SHA synchronously before enqueue to close TOCTOU window
       if (reviewedShas.has(shaKey, headSha)) {
         console.log(`⏭️ Already reviewed commit ${headSha.substring(0,7)} for PR #${pullNumber}`);
         return res.json({ success: true, message: 'Webhook received (duplicate SHA skipped).' });
@@ -1116,16 +1115,15 @@ app.post('/api/webhook', webhookLimiter, async (req, res) => {
       repoEntry.count++;
       repoRequestCounts.set(repoKey, repoEntry);
 
-      const enqueued = reviewQueue.enqueue(reviewKey, { owner, repo, pullNumber, headSha }, async (item) => {
+      const enqueuePromise = reviewQueue.enqueue(reviewKey, { owner, repo, pullNumber, headSha }, async (item) => {
         try {
           await runWebhookReview(item.owner, item.repo, item.pullNumber, item.headSha);
         } catch (error) {
           console.error(`❌ Webhook review failed for ${headSha}:`, error.message);
-          // Remove SHA on failure so next delivery can retry
           reviewedShas.delete(shaKey, headSha);
         }
       });
-      if (enqueued === undefined) {
+      if (!enqueuePromise) {
         return res.status(429).json({ error: 'Review queue full. Try again later.' });
       }
     }
