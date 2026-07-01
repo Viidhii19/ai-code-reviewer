@@ -637,7 +637,11 @@ app.post('/api/analyze', requireApiKey, requireJsonContentType, analyzeLimiter, 
           const { chunks } = await splitResp.json();
           await fetchWithTimeout(`${baseUrl}/api/rag/ingest`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.REPOSAGE_API_KEY || '' },
+            headers: {
+              'Content-Type': 'application/json',
+              'x-api-key': process.env.REPOSAGE_API_KEY || '',
+              'x-rag-ingest-key': process.env.RAG_INGEST_KEY || ''
+            },
             body: JSON.stringify({ repo_url: repoUrl, chunks })
           }, 60000);
         }

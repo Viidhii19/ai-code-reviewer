@@ -93,3 +93,29 @@ class TestRagIngestEndpoint:
         }
         response = client.post("/api/rag/ingest", json=payload)
         assert response.status_code == 422
+
+    @patch('rag.ingest_chunks')
+    @patch('rag.delete_repo_chunks')
+    def test_requires_rag_ingest_key_when_configured(self, mock_delete, mock_ingest, monkeypatch):
+        monkeypatch.setenv("RAG_INGEST_KEY", "ingest-secret")
+        mock_ingest.return_value = 1
+        payload = {
+            "repo_url": "https://github.com/test/repo",
+            "chunks": [
+                {
+                    "chunk_id": "file-py-0",
+                    "content": "x = 1",
+                    "metadata": {"source_file": "file.py", "fileName": "file.py", "chunk_index": 0, "total_chunks": 1, "language": "python", "start_line": 1, "end_line": 1},
+                },
+            ],
+        }
+
+        response = client.post("/api/rag/ingest", json=payload)
+        assert response.status_code == 401
+
+        response = client.post(
+            "/api/rag/ingest",
+            json=payload,
+            headers={"x-rag-ingest-key": "ingest-secret"},
+        )
+        assert response.status_code == 200

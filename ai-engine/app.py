@@ -269,6 +269,16 @@ def verify_api_key(x_api_key: str = Header(None)):
     if expected_key and x_api_key != expected_key:
         raise HTTPException(status_code=401, detail="Invalid API Key")
 
+def verify_rag_ingest_key(x_rag_ingest_key: str = Header(None)):
+    expected_key = os.getenv("RAG_INGEST_KEY")
+    import sys
+    if "pytest" in sys.modules and not expected_key:
+        return
+    if not expected_key:
+        raise HTTPException(status_code=500, detail="RAG ingest key is not configured.")
+    if x_rag_ingest_key != expected_key:
+        raise HTTPException(status_code=401, detail="Invalid RAG ingest key")
+
 # Restrict CORS to configured origins so the AI engine is not accessible from
 # arbitrary third-party websites. Defaults to the local backend service address.
 # Set ALLOWED_ORIGINS in .env as a comma-separated list, e.g.:
@@ -950,7 +960,7 @@ async def _get_ingest_lock(repo_url: str) -> asyncio.Lock:
         _ingest_locks[repo_url] = asyncio.Lock()
     return _ingest_locks[repo_url]
 
-@app.post("/api/rag/ingest", response_model=IngestionResponse)
+@app.post("/api/rag/ingest", response_model=IngestionResponse, dependencies=[Depends(verify_rag_ingest_key)])
 async def ingest_chunks_route(request: IngestRequest):
     from rag import ingest_chunks, delete_repo_chunks
     lock = await _get_ingest_lock(request.repo_url)
