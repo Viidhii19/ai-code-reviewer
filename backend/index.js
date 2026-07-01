@@ -1205,6 +1205,7 @@ async function runWebhookReview(owner, repo, pullNumber, headSha) {
   const commentsToPost = [];
   const filesToReview = [];
   const validChangedLines = new Map();
+  let incompleteSecretScan = false;
 
   for (const file of parsedFiles) {
     // Check if file is supported
@@ -1225,6 +1226,7 @@ async function runWebhookReview(owner, repo, pullNumber, headSha) {
       });
     });
     if (scanTruncated) {
+      incompleteSecretScan = true;
       console.warn(`⚠️ Secrets scan truncated for ${file.path}: ${scanReason} (total ${scanTotal} changes)`);
     }
 
@@ -1303,6 +1305,20 @@ async function runWebhookReview(owner, repo, pullNumber, headSha) {
 The AI engine could not be reached during this review. The secrets scanner found **0 issues**, but the PR was **not** fully reviewed by the AI.
 
 Please ensure the AI Engine service is running and re-trigger the review for a complete analysis.`
+    });
+  } else if (incompleteSecretScan) {
+    console.log('Secret scan was incomplete. Posting COMMENT review instead of approving.');
+    await octokit.rest.pulls.createReview({
+      owner,
+      repo,
+      pull_number: pullNumber,
+      commit_id: headSha,
+      event: 'COMMENT',
+      body: `## RepoSage Secret Scan Incomplete
+
+The local secret scanner stopped before processing all changed lines. No approval was posted because hardcoded credentials may exist in the unscanned portion of this Pull Request.
+
+Please split the PR or raise the configured scan limits and rerun the review.`
     });
   } else {
     console.log('🎉 No code issues or recommendations found. Posting approval review...');
