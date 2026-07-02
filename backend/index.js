@@ -27,6 +27,7 @@ import { DANGEROUS_PHRASES } from './shared/dangerousPhrases.js';
 import { verifyPort } from './utils/envVerifier.js';
 import { mockAIReview } from './utils/mockAIReview.js';
 import AnalysisCache from './utils/analysisCache.js';
+import DedupStore from './utils/dedupStore.js';
 import mongoose from 'mongoose';
 import Analytics from './models/Analytics.js';
 import Session, { estimateSessionSize } from './models/Session.js';
@@ -80,6 +81,7 @@ if (process.env.REDIS_URL) {
   redisClient = new Redis(process.env.REDIS_URL);
   redisClient.on('error', (err) => console.error('Redis Client Error', err));
 }
+const dedupStore = new DedupStore(redisClient);
 
 // Per-IP rate limiting for expensive endpoints
 const analyzeLimiter = rateLimit({
@@ -1108,12 +1110,12 @@ app.post('/api/webhook', webhookLimiter, async (req, res) => {
       return res.status(400).json({ error: 'Missing x-github-delivery header.' });
     }
     const deliveryDedupKey = `webhook:delivery:${deliveryId}`;
-    const isDuplicate = await redisClient.setnx(deliveryDedupKey, Date.now().toString());
-    if (isDuplicate === 0) {
+    const deliveryAlreadyProcessed = await dedupStore.has(deliveryDedupKey);
+    if (deliveryAlreadyProcessed) {
       console.log(`⏭️ Skipping duplicate webhook delivery: ${deliveryId}`);
       return res.json({ success: true, message: 'Webhook received (duplicate skipped).' });
     }
-    await redisClient.expire(deliveryDedupKey, DELIVERY_REDIS_TTL);
+    await dedupStore.set(deliveryDedupKey, Date.now().toString(), DELIVERY_REDIS_TTL * 1000);
 
     const action = payload.action;
     if (action === 'opened' || action === 'synchronize') {
@@ -1125,7 +1127,7 @@ app.post('/api/webhook', webhookLimiter, async (req, res) => {
 
       const shaKey = `${owner}/${repo}/#${pullNumber}`;
       const shaDedupKey = `webhook:sha:${shaKey}`;
-      const shaAlreadyReviewed = await redisClient.sismember(shaDedupKey, headSha);
+      const shaAlreadyReviewed = await dedupStore.isMember(shaDedupKey, headSha);
       if (shaAlreadyReviewed) {
         console.log(`⏭️ Already reviewed commit ${headSha.substring(0,7)} for PR #${pullNumber}`);
         return res.json({ success: true, message: 'Webhook received (duplicate SHA skipped).' });
@@ -1157,12 +1159,12 @@ app.post('/api/webhook', webhookLimiter, async (req, res) => {
           await runWebhookReview(item.owner, item.repo, item.pullNumber, item.headSha);
         } catch (error) {
           console.error(`❌ Webhook review failed for ${headSha}:`, error.message);
-          await redisClient.srem(shaDedupKey, headSha);
+          await dedupStore.removeFromSet(shaDedupKey, headSha);
         }
       });
       if (enqueuePromise) {
-        await redisClient.sadd(shaDedupKey, headSha);
-        await redisClient.expire(shaDedupKey, DELIVERY_REDIS_TTL);
+        await dedupStore.addToSet(shaDedupKey, headSha);
+        await dedupStore.expire(shaDedupKey, DELIVERY_REDIS_TTL * 1000);
       } else {
         return res.status(429).json({ error: 'Review queue full. Try again later.' });
       }
