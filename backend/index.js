@@ -38,8 +38,6 @@ validateSessionSecret();
 
 const octokit = new Octokit({ auth: process.env.GITHUB_PAT || undefined });
 
-connectDatabase();
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -1922,7 +1920,12 @@ app.get("/api/review-history/compare/:id1/:id2", requireApiKey, async (req, res)
 
 });
 
-app.listen(PORT, () => {
-  console.log(`🟢 RepoSage Backend running on http://localhost:${PORT}`);
-});
+async function startServer() {
+  await connectDatabase();
+  app.listen(PORT, () => {
+    console.log(`🟢 RepoSage Backend running on http://localhost:${PORT}`);
+  });
+}
+
+startServer();
 // TODO: Issue #397 - Bug [Backend]: Temp folder leakage if Node process crashes during analysis
