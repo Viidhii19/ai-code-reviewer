@@ -38,6 +38,9 @@ MAX_FILE_CHARS_PER_FILE = int(os.getenv("MAX_FILE_CHARS_PER_FILE", "1500"))
 MAX_CHAT_FILES = int(os.getenv("MAX_CHAT_FILES", "20"))
 # Maximum seconds to wait for a single LLM API response before returning 504 (#786)
 LLM_TIMEOUT_SECONDS = float(os.getenv("LLM_TIMEOUT_SECONDS", "30"))
+# Maximum number of Groq batch requests to run concurrently during /analyze.
+# Bounds fan-out so large repositories don't blow past Groq's rate limits. (#1675)
+GROQ_CONCURRENCY_LIMIT = int(os.getenv("GROQ_CONCURRENCY_LIMIT", "10"))
 
 # Single source of truth for dangerous patterns — keep in sync with
 # shared-safety-config.json
@@ -454,21 +457,28 @@ async def analyze_repository(request: AnalyzeRequest):
 
     # 2. Chunk files into batches
     batches = [files[i:i + batch_size] for i in range(0, len(files), batch_size)]
-    
+
     combined_result = {
         "fileReviews": {},
         "generatedReadme": "",
         "mermaidDiagram": ""
     }
 
-    # 3. Process batches sequentially
-    truncated_files = []
-    for idx, batch in enumerate(batches):
+    # 3. Process batches concurrently (bounded by GROQ_CONCURRENCY_LIMIT) instead
+    # of one-at-a-time. Each Groq call already runs in a thread-pool executor
+    # (see _call_groq_with_timeout), so fanning them out via asyncio.gather cuts
+    # total wall-clock time from O(n_batches * latency) to roughly
+    # O(ceil(n_batches / GROQ_CONCURRENCY_LIMIT) * latency) for large repos. (#1675)
+    groq_semaphore = asyncio.Semaphore(GROQ_CONCURRENCY_LIMIT)
+
+    async def process_batch(idx, batch):
+        is_first_batch = (idx == 0)
+        local_truncated_files = []
         file_contents_summary = []
         for f in batch:
             content = f.content[:MAX_FILE_CHARS_PER_FILE]
             if len(f.content) > MAX_FILE_CHARS_PER_FILE:
-                truncated_files.append({
+                local_truncated_files.append({
                     "name": f.name,
                     "original_length": len(f.content),
                     "truncated_length": MAX_FILE_CHARS_PER_FILE
@@ -477,9 +487,7 @@ async def analyze_repository(request: AnalyzeRequest):
             file_contents_summary.append(f"--- File: {f.name} ---\n{content}")
         contents_text = "\n\n".join(file_contents_summary)
         contents_text = sanitize_file_content(contents_text)
-        
-        is_first_batch = (idx == 0)
-        
+
         if is_first_batch:
             review_prompt = f"""Target Company Persona: {company}
 Response Language: {language}
@@ -553,7 +561,7 @@ Format your JSON precisely as:
 
 You must obey the JSON output format above."""
 
-        try:
+        async with groq_semaphore:
             print(f"⏳ Processing batch {idx + 1}/{len(batches)} ({len(batch)} files)...")
             completion = await _call_groq_with_timeout(
                 model=groq_model,
@@ -565,42 +573,58 @@ You must obey the JSON output format above."""
                 max_tokens=max_tokens,
                 response_format={"type": "json_object"}
             )
-            
-            response_content = completion.choices[0].message.content
-            if not response_content:
-                raise HTTPException(status_code=502, detail="Groq returned an empty or filtered response. The input may have been blocked by safety filters.")
-            batch_result = json.loads(response_content)
-            
-            # Merge results
-            if is_first_batch:
-                if "mermaidDiagram" in batch_result:
-                    sanitized = sanitize_ai_output(batch_result["mermaidDiagram"])
-                    combined_result["mermaidDiagram"] = sanitize_mermaid_code(sanitized)
-                if "generatedReadme" in batch_result:
-                    combined_result["generatedReadme"] = sanitize_ai_output(batch_result["generatedReadme"])
-            
-            if "fileReviews" in batch_result:
-                for file_path, review in batch_result["fileReviews"].items():
-                    # Sanitize review items
-                    for category in ["bugs", "security", "optimization", "styling"]:
-                        for item in review.get(category, []):
-                            if "suggestion" in item:
-                                item["suggestion"] = sanitize_ai_output(item["suggestion"])
-                            if "description" in item:
-                                item["description"] = sanitize_ai_output(item["description"])
-                    
-                    # Store in combined results
-                    combined_result["fileReviews"][file_path] = review
 
-        except Exception as e:
-            print(f"❌ Groq API Call Failed for batch {idx + 1}: {_redact_key(str(e), api_key)}")
+        response_content = completion.choices[0].message.content
+        if not response_content:
+            raise HTTPException(status_code=502, detail="Groq returned an empty or filtered response. The input may have been blocked by safety filters.")
+        batch_result = json.loads(response_content)
+
+        return batch_result, local_truncated_files
+
+    # Fan out all batches concurrently (bounded by the semaphore above).
+    # return_exceptions=True so one failing batch doesn't cancel the others —
+    # each result is inspected below and handled the same way the old
+    # sequential try/except did per batch.
+    batch_tasks = [process_batch(idx, batch) for idx, batch in enumerate(batches)]
+    batch_outcomes = await asyncio.gather(*batch_tasks, return_exceptions=True)
+
+    truncated_files = []
+    for idx, outcome in enumerate(batch_outcomes):
+        is_first_batch = (idx == 0)
+
+        if isinstance(outcome, Exception):
+            print(f"❌ Groq API Call Failed for batch {idx + 1}: {_redact_key(str(outcome), api_key)}")
             # If the first batch fails, we should probably fail the whole request since README/Mermaid are missing
             if is_first_batch:
-                raise HTTPException(status_code=500, detail=f"Groq API reasoning failed on first batch: {_redact_key(str(e), api_key)}")
+                raise HTTPException(status_code=500, detail=f"Groq API reasoning failed on first batch: {_redact_key(str(outcome), api_key)}")
             else:
                 print(f"⚠️ Skipping failed batch {idx + 1} and continuing...")
                 continue
-                
+
+        batch_result, local_truncated_files = outcome
+        truncated_files.extend(local_truncated_files)
+
+        # Merge results
+        if is_first_batch:
+            if "mermaidDiagram" in batch_result:
+                sanitized = sanitize_ai_output(batch_result["mermaidDiagram"])
+                combined_result["mermaidDiagram"] = sanitize_mermaid_code(sanitized)
+            if "generatedReadme" in batch_result:
+                combined_result["generatedReadme"] = sanitize_ai_output(batch_result["generatedReadme"])
+
+        if "fileReviews" in batch_result:
+            for file_path, review in batch_result["fileReviews"].items():
+                # Sanitize review items
+                for category in ["bugs", "security", "optimization", "styling"]:
+                    for item in review.get(category, []):
+                        if "suggestion" in item:
+                            item["suggestion"] = sanitize_ai_output(item["suggestion"])
+                        if "description" in item:
+                            item["description"] = sanitize_ai_output(item["description"])
+
+                # Store in combined results
+                combined_result["fileReviews"][file_path] = review
+
     combined_result["truncatedFiles"] = truncated_files
     return combined_result
 
