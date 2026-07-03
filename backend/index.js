@@ -311,6 +311,15 @@ function cleanupTempRepos() {
 function onShutdown() { cleanupTempRepos(); cleanupTimers(); if (redisClient) redisClient.quit(); closeDatabase(); process.exit(0); }
 process.on('SIGINT', onShutdown);
 process.on('SIGTERM', onShutdown);
+// Clean up temp_repos and timers on uncaught exceptions to prevent orphan temp folders
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught exception:', err);
+  cleanupTempRepos();
+  cleanupTimers();
+  if (redisClient) redisClient.quit();
+  closeDatabase();
+  process.exit(1);
+});
 
 // Repository contexts for chat are now persisted in MongoDB via the Session model.
 // The Session collection uses a TTL index on absoluteExpiry (expireAfterSeconds: 0)
