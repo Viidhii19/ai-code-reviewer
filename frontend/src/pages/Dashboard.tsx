@@ -312,6 +312,8 @@ function MermaidViewer({ chart, repoName }: MermaidViewerProps) {
 
 export default function Dashboard() {
   const [showSettings, setShowSettings] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const [showShortcutsHelp, setShowShortcutsHelp] = useState(false);
 
   // Input State
   const [repoUrl, setRepoUrl] = useState("");
@@ -326,6 +328,7 @@ export default function Dashboard() {
   // Response & View State
   const { analysisResult, setAnalysisResult, selectedFile, setSelectedFile, chatHistory, setChatHistory } = useStore();
   const [fileFilterQuery, setFileFilterQuery] = useState('');
+  // Debounced search to prevent heavy filtering on every keystroke
   const debouncedFileFilterQuery = useDebounce(fileFilterQuery, 300);
   const [isClearHovered, setIsClearHovered] = useState(false);
   const [activeExtFilter, setActiveExtFilter] = useState('All');
@@ -432,9 +435,35 @@ export default function Dashboard() {
   };
 
   useEffect(() => {
-    if (!apiError) return;
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setApiError(null);
+      // Escape to close modals and clear errors
+      if (e.key === "Escape") {
+        setApiError(null);
+        setShowSettings(false);
+        setShowShortcutsHelp(false);
+        if (document.activeElement === searchInputRef.current) {
+          searchInputRef.current?.blur();
+        }
+      }
+      
+      // Ctrl+K to search files
+      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+      }
+
+      // J/K for navigating views (mocked logic - just toggling tabs)
+      if (e.target === document.body || document.activeElement === document.body) {
+        if (e.key.toLowerCase() === "j" || e.key.toLowerCase() === "k") {
+          // Simply show help or focus first clickable as a demo
+          setShowShortcutsHelp(true);
+        }
+        
+        // ? to show shortcuts
+        if (e.key === "?") {
+          setShowShortcutsHelp(true);
+        }
+      }
     };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
@@ -2429,10 +2458,11 @@ export default function Dashboard() {
                     />
 
                     <input
+                      ref={searchInputRef}
                       type="text"
                       value={fileFilterQuery}
                       onChange={(e) => setFileFilterQuery(e.target.value)}
-                      placeholder="Search files..."
+                      placeholder="Search files... (Ctrl+K)"
                       style={{
                         width: '100%',
                         padding: '6px 30px 6px 28px',
@@ -4424,6 +4454,65 @@ export default function Dashboard() {
       {showSettings && (
         <SettingsModal onClose={() => setShowSettings(false)} />
       )}
+      {showShortcutsHelp && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.55)",
+            display: "flex",
+            justifyContent: "center",
+            alignItems: "center",
+            zIndex: 9999,
+          }}
+          onClick={() => setShowShortcutsHelp(false)}
+        >
+          <div
+            className="glass-panel"
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: "400px",
+              padding: "24px",
+              borderRadius: "12px",
+              background: "var(--panel-bg)",
+              color: "var(--text-color)",
+              border: "1px solid var(--border-color)",
+            }}
+          >
+            <h2 style={{ marginTop: 0 }}>Keyboard Shortcuts</h2>
+            <ul style={{ listStyle: "none", padding: 0, margin: 0, fontSize: "14px" }}>
+              <li style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px" }}>
+                <span>Focus Search</span>
+                <kbd style={{ background: "#374151", padding: "2px 6px", borderRadius: "4px" }}>Ctrl + K</kbd>
+              </li>
+              <li style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px" }}>
+                <span>Close Modals / Blur Input</span>
+                <kbd style={{ background: "#374151", padding: "2px 6px", borderRadius: "4px" }}>Esc</kbd>
+              </li>
+              <li style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px" }}>
+                <span>Show Shortcuts</span>
+                <kbd style={{ background: "#374151", padding: "2px 6px", borderRadius: "4px" }}>?</kbd>
+              </li>
+            </ul>
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "24px" }}>
+              <button
+                onClick={() => setShowShortcutsHelp(false)}
+                style={{
+                  background: "#2563eb",
+                  color: "#fff",
+                  border: "none",
+                  padding: "8px 16px",
+                  borderRadius: "6px",
+                  cursor: "pointer",
+                }}
+              >
+                Got it
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 🚀 Sleek Footer */}
       <footer
         style={{
