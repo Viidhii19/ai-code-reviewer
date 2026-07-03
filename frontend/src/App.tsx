@@ -20,6 +20,7 @@ export default function App() {
                 </Route>
             </Routes>
         </BrowserRouter>
+      <div id="toast-root"></div>
     );
 }
 
