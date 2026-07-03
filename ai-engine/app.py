@@ -17,6 +17,41 @@ import bleach
 from bleach.css_sanitizer import CSSSanitizer
 import vectorstore
 from embeddings import is_fallback_active
+from config_loader import load_config_from_files, ConfigValidationError, CONFIG_FILENAME
+
+_EXTENSION_TO_LANGUAGE = {
+    "go": "go",
+    "py": "python",
+    "js": "javascript",
+    "jsx": "javascript",
+    "ts": "typescript",
+    "tsx": "typescript",
+    "java": "java",
+    "rs": "rust",
+    "rb": "ruby",
+    "php": "php",
+    "cs": "csharp",
+    "cpp": "cpp",
+    "h": "cpp",
+    "sql": "sql",
+    "html": "html",
+    "css": "css",
+}
+
+
+def _language_key_for_extension(filename: str) -> str:
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    return _EXTENSION_TO_LANGUAGE.get(ext, ext)
+
+
+def _rule_key(finding_type: str) -> str:
+    """
+    Normalize an LLM-generated finding `type` (free text, e.g.
+    "Console Statement") into a kebab-case rule key (e.g.
+    "console-statement") so it can be looked up against .codereviewer.yml's
+    `rules` map the same way a static analyzer's fixed rule ID would be.
+    """
+    return re.sub(r"[^a-z0-9]+", "-", finding_type.strip().lower()).strip("-")
 
 # Load environment variables: prefer local .env, fall back to backend/.env
 env_paths = [
@@ -424,7 +459,34 @@ async def analyze_repository(request: AnalyzeRequest):
     max_tokens = request.maxTokens or 2048
     batch_size = request.batchSize or 5
     custom_system_prompt = validate_system_prompt(request.systemPrompt or "")
-    
+
+    # 0. Load .codereviewer.yml if the backend included it in the file list
+    # (it walks the repo and sends every readable .yml/.yaml file already).
+    # A present-but-invalid config halts the review with a clear error
+    # rather than silently falling back to defaults.
+    try:
+        review_config = load_config_from_files(files)
+    except ConfigValidationError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid {CONFIG_FILENAME}: {e}")
+
+    had_files_before_config_filtering = len(files) > 0
+
+    # The config file itself is metadata, not source code to review.
+    files = [f for f in files if f.name != CONFIG_FILENAME]
+
+    if review_config:
+        files = [
+            f for f in files
+            if not review_config.is_path_ignored(f.name)
+            and review_config.is_language_enabled(_language_key_for_extension(f.name))
+        ]
+
+    if not files and had_files_before_config_filtering:
+        raise HTTPException(
+            status_code=400,
+            detail="No files left to review after excluding .codereviewer.yml and applying its ignore_paths/disabled languages."
+        )
+
     # 1. Prepare global repository structure
     repo_structure = [f.name for f in files]
     structure_text = "\n".join(repo_structure)
@@ -581,14 +643,21 @@ You must obey the JSON output format above."""
             
             if "fileReviews" in batch_result:
                 for file_path, review in batch_result["fileReviews"].items():
-                    # Sanitize review items
+                    # Sanitize review items, and drop any finding whose type
+                    # (used as the rule name) is configured `off` in
+                    # .codereviewer.yml.
                     for category in ["bugs", "security", "optimization", "styling"]:
+                        kept_items = []
                         for item in review.get(category, []):
                             if "suggestion" in item:
                                 item["suggestion"] = sanitize_ai_output(item["suggestion"])
                             if "description" in item:
                                 item["description"] = sanitize_ai_output(item["description"])
-                    
+                            if review_config and item.get("type") and review_config.is_rule_off(_rule_key(item["type"])):
+                                continue
+                            kept_items.append(item)
+                        review[category] = kept_items
+
                     # Store in combined results
                     combined_result["fileReviews"][file_path] = review
 
