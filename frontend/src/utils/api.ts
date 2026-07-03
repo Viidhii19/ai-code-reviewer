@@ -142,13 +142,3 @@ export const getReviewHistory = async () => {
   if (!response.ok) throw new Error("Failed to fetch review history");
   return response.json();
 };
-
-export const getFixSuggestions = async (findingId: string) => {
-  const response = await apiFetch(`/api/fix-suggestions/${findingId}`);
-
-  if (!response.ok) {
-    throw new Error("Failed to fetch AI fix suggestions");
-  }
-
-  return response.json();
-};
