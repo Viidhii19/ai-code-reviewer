@@ -25,6 +25,7 @@ import ReviewQueue from './utils/reviewQueue.js';
 import { scanFileContentForWarnings } from './utils/sanitizeFileContent.js';
 import sharedConfig from '../shared-safety-config.json' assert { type: 'json' };
 import { verifyPort } from './utils/envVerifier.js';
+import { sanitizeRedisKey } from './utils/redisSafe.js';
 import { mockAIReview } from './utils/mockAIReview.js';
 import AnalysisCache from './utils/analysisCache.js';
 import mongoose from 'mongoose';
@@ -1247,7 +1248,13 @@ app.post('/api/webhook', webhookLimiter, async (req, res) => {
     if (!deliveryId || typeof deliveryId !== 'string') {
       return res.status(400).json({ error: 'Missing x-github-delivery header.' });
     }
-    const deliveryDedupKey = `webhook:delivery:${deliveryId}`;
+    const GITHUB_DELIVERY_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!GITHUB_DELIVERY_UUID_RE.test(deliveryId)) {
+      console.warn(`Rejected malformed x-github-delivery header: ${deliveryId}`);
+      return res.status(400).json({ error: 'Invalid delivery ID format.' });
+    }
+    const safeDeliveryId = sanitizeRedisKey(deliveryId);
+    const deliveryDedupKey = `webhook:delivery:${safeDeliveryId}`;
     let isDuplicate;
     if (redisClient) {
       isDuplicate = await redisClient.setnx(deliveryDedupKey, Date.now().toString());
@@ -1270,7 +1277,7 @@ app.post('/api/webhook', webhookLimiter, async (req, res) => {
       const repo = payload.repository.name;
       const reviewKey = `${owner}/${repo}/#${pullNumber}`;
 
-      const shaKey = `${owner}/${repo}/#${pullNumber}`;
+      const shaKey = `${sanitizeRedisKey(owner)}/${sanitizeRedisKey(repo)}/#${sanitizeRedisKey(String(pullNumber))}`;
       const shaDedupKey = `webhook:sha:${shaKey}`;
       let shaAlreadyReviewed;
       if (redisClient) {
