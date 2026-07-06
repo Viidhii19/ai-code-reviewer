@@ -24,9 +24,7 @@ import { deleteFolderRecursive, getFolderSize } from './utils/fileHelper.js';
 import { verifyWebhookSignature } from './utils/signatureVerifier.js';
 import ReviewQueue from './utils/reviewQueue.js';
 import { scanFileContentForWarnings } from './utils/sanitizeFileContent.js';
-import { createRequire } from 'module';
-const require = createRequire(import.meta.url);
-const sharedConfig = require('../shared-safety-config.json');
+import { DANGEROUS_PHRASES, HOMOGLYPH_MAP } from './shared/dangerousPhrases.js';
 import { verifyPort } from './utils/envVerifier.js';
 import { sanitizeRedisKey } from './utils/redisSafe.js';
 import { mockAIReview } from './utils/mockAIReview.js';
@@ -456,6 +454,14 @@ const dedupMemorySet = new Set();
 const shaDedupMemorySet = new Set();
 const DEDUP_MEMORY_TTL = DELIVERY_REDIS_TTL * 1000;
 
+// Atomic check-and-add for in-memory dedup (best-effort under concurrent load)
+function checkAndSetDedup(key) {
+  if (dedupMemorySet.has(key)) return 0;
+  dedupMemorySet.add(key);
+  setTimeout(() => dedupMemorySet.delete(key), DEDUP_MEMORY_TTL);
+  return 1;
+}
+
 
 // Periodic sweeper for stale exclusive locks to prevent unbounded memory growth
 const EXCLUSIVE_LOCK_CLEANUP_INTERVAL = 5 * 60 * 1000;
@@ -469,9 +475,7 @@ function cleanupTimers() {
   clearInterval(exclusiveLockCleanupTimer);
 }
 
-  const HOMOGLYPH_MAP = sharedConfig.homoglyph_map;
-  const DANGEROUS_PHRASES = sharedConfig.dangerous_phrases;
-  const SHARED_CONFIG_VERSION = sharedConfig.version;
+  // Loaded from shared-safety-config.json via dangerousPhrases.js
 
   function normalizeHomoglyphs(text) {
     return text.split('').map(ch => HOMOGLYPH_MAP[ch] || ch).join('');
@@ -1194,7 +1198,7 @@ setInterval(() => {
       repoRequestCounts.delete(key);
     }
   }
-}, 60 * 1000);
+}, 60 * 1000).unref();
 
 const webhookLimiter = rateLimit({
   windowMs: 60 * 1000,
