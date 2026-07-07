@@ -1,3 +1,4 @@
+import 'express-async-errors';
 import dotenv from 'dotenv';
 import express from 'express';
 import cors from 'cors';
@@ -338,6 +339,21 @@ function cleanupTempRepos() {
 function onShutdown() { cleanupTempRepos(); cleanupTimers(); if (redisClient) redisClient.quit(); closeDatabase(); process.exit(0); }
 process.on('SIGINT', onShutdown);
 process.on('SIGTERM', onShutdown);
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason instanceof Error ? reason.message : reason);
+  if (reason instanceof Error && reason.stack) {
+    console.error(reason.stack);
+  }
+});
+
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught Exception:', error.message);
+  if (error.stack) {
+    console.error(error.stack);
+  }
+  process.exit(1);
+});
 
 // Repository contexts for chat are now persisted in MongoDB via the Session model.
 // The Session collection uses a TTL index on absoluteExpiry (expireAfterSeconds: 0)
@@ -2148,6 +2164,21 @@ app.get('/health', (req, res) => {
     mode: isDatabaseConnected() ? 'full' : 'degraded',
   });
 });
+
+const errorHandler = (err, req, res, next) => {
+  console.error('Unhandled error in request:', err.message);
+  if (err.stack) {
+    console.error(err.stack);
+  }
+  if (res.headersSent) {
+    return next(err);
+  }
+  const statusCode = err.statusCode || err.status || 500;
+  res.status(statusCode).json({
+    error: process.env.NODE_ENV === 'production' ? 'Internal server error' : err.message,
+  });
+};
+app.use(errorHandler);
 
 async function startServer() {
   await connectDatabase();
