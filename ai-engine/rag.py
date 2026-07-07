@@ -178,7 +178,7 @@ def cleanup_stale_chunks(current_files: set, repo_url: Optional[str] = None) -> 
         metadatas = batch.get("metadatas") or []
         if not metadatas:
             break
-        stored_paths.update(m.get("source_file") for m in metadatas if m.get("source_file"))
+        stored_paths.update(m.get("source_file") for m in metadatas if m and m.get("source_file"))
         offset += len(metadatas)
     stale_paths = stored_paths - current_files
     removed_count = 0

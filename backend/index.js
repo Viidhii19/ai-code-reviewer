@@ -24,6 +24,7 @@ import { analyzeComplexity } from './utils/complexityAnalyzer.js';
 import { deleteFolderRecursive, getFolderSize } from './utils/fileHelper.js';
 import { verifyWebhookSignature } from './utils/signatureVerifier.js';
 import ReviewQueue from './utils/reviewQueue.js';
+const reviewQueue = new ReviewQueue();
 import { scanFileContentForWarnings } from './utils/sanitizeFileContent.js';
 import { DANGEROUS_PHRASES, HOMOGLYPH_MAP } from './shared/dangerousPhrases.js';
 import { verifyPort } from './utils/envVerifier.js';
@@ -471,7 +472,7 @@ const SHA_DEDUP_MAX_SIZE = 10000;
 function checkAndSetDedup(key) {
   if (dedupMemorySet.has(key)) return 0;
   dedupMemorySet.add(key);
-  setTimeout(() => dedupMemorySet.delete(key), DEDUP_MEMORY_TTL);
+  setTimeout(() => dedupMemorySet.delete(key), DEDUP_MEMORY_TTL).unref();
   return 1;
 }
 
