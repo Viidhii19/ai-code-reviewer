@@ -311,11 +311,7 @@ _rate_limit_store: OrderedDict[str, list[float]] = OrderedDict()
 _rate_limit_lock = asyncio.Lock()
 
 async def rate_limit_middleware(request: Request, call_next):
-    client_ip = (
-        request.headers.get("x-forwarded-for", "").split(",")[0].strip()
-        or (request.client.host if request.client else None)
-        or "unknown"
-    )
+    client_ip = (request.client.host if request.client else None) or "unknown"
     now = time.time()
 
     async with _rate_limit_lock:
