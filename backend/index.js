@@ -700,13 +700,21 @@ app.post('/api/analyze', requireApiKey, requireJsonContentType, analyzeLimiter, 
             const resData = await aiResponse.json();
             resData._mock = false;
             return resData;
+          } else if (aiResponse.status === 401) {
+            console.error('🚨 AI Engine rejected authentication. Check REPOSAGE_API_KEY in backend/.env');
+            const errData = await aiResponse.json().catch(() => ({}));
+            throw new Error(errData.error || 'AI Engine authentication failed — not falling back to mock');
           } else {
             throw new Error('AI engine responded with error');
           }
         } catch (err) {
+          if (err.message.includes('authentication failed')) {
+            throw err;
+          }
           console.warn('⚠️ FastAPI engine not running, falling back to local Express review handler');
           const mockRes = mockAIReview(files, model);
           mockRes._mock = true;
+          mockRes._mockWarning = true;
           return mockRes;
         }
       }, repoUrl);
@@ -1079,12 +1087,19 @@ app.post('/api/analyze-file', requireApiKey, requireJsonContentType, analyzeLimi
       if (aiResponse.ok) {
         const resData = await aiResponse.json();
         reviewResult = resData;
+      } else if (aiResponse.status === 401) {
+        const errData = await aiResponse.json().catch(() => ({}));
+        throw new Error(errData.error || 'AI Engine authentication failed');
       } else {
         throw new Error('AI engine responded with error');
       }
     } catch (err) {
+      if (err.message.includes('authentication failed')) {
+        throw err;
+      }
       const { mockAIReview } = await import('./utils/mockAIReview.js');
       const mockRes = mockAIReview(files, model);
+      mockRes._mockWarning = true;
       reviewResult = mockRes;
     }
 
@@ -1622,8 +1637,14 @@ async function runWebhookReview(owner, repo, pullNumber, headSha) {
         } else {
           console.warn('⚠️ AI engine returned HTTP 200 with empty or malformed response body — not treating as a clean analysis');
         }
+      } else if (aiResponse.status === 401) {
+        console.error('🚨 AI Engine rejected authentication. Check REPOSAGE_API_KEY in backend/.env');
+        throw new Error('AI Engine authentication failed');
       }
     } catch (err) {
+      if (err.message === 'AI Engine authentication failed') {
+        throw err;
+      }
       console.warn("⚠️ FastAPI AI Engine error, posting local scans only:", err.message);
     }
   }
