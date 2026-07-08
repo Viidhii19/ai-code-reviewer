@@ -33,6 +33,7 @@ import { sanitizeRedisKey } from './utils/redisSafe.js';
 import { mockAIReview } from './utils/mockAIReview.js';
 import { loadConfigFile, applySeverityConfig } from './utils/severityConfig.js';
 import AnalysisCache from './utils/analysisCache.js';
+import { getPriorReviewIds, storeReviewIds, clearReviewIds, supersedePriorReviews } from './utils/reviewTracker.js';
 import mongoose from 'mongoose';
 import Analytics from './models/Analytics.js';
 import Session, { estimateSessionSize } from './models/Session.js';
@@ -1459,6 +1460,16 @@ app.post('/api/webhook', webhookLimiter, async (req, res) => {
         }
         return res.status(429).json({ error: 'Review queue full. Try again later.' });
       }
+    } else if (action === 'closed') {
+      // Covers both merged and closed-without-merging PRs. Clear the tracked
+      // review so a later reopen of this same PR number doesn't try to
+      // supersede a review from a previous, already-finished lifecycle.
+      const pullNumber = payload.pull_request.number;
+      const owner = payload.repository.owner.login;
+      const repo = payload.repository.name;
+      if (redisClient) {
+        await clearReviewIds(redisClient, owner, repo, pullNumber);
+      }
     }
   }
 
@@ -1556,6 +1567,16 @@ async function runWebhookReview(owner, repo, pullNumber, headSha) {
     console.log(`⏭️ Skipping stale review ${headSha.substring(0, 7)}; current head is ${pullRequest.head.sha.substring(0, 7)}.`);
     return;
   }
+
+  // Supersede whatever review was posted for a prior commit on this PR, so
+  // repeated pushes update the review in place instead of accumulating a
+  // new duplicate comment thread on every `synchronize` event.
+  const priorReviewIds = redisClient ? await getPriorReviewIds(redisClient, owner, repo, pullNumber) : [];
+  if (priorReviewIds.length > 0) {
+    console.log(`♻️ Superseding ${priorReviewIds.length} review(s) from a previous commit on PR #${pullNumber}...`);
+    await supersedePriorReviews(octokit, owner, repo, pullNumber, priorReviewIds);
+  }
+  const postedReviewIds = [];
 
   // 1. Fetch the diff for the verified current pull-request head.
   const { data: diff } = await octokit.rest.pulls.get({
@@ -1687,7 +1708,7 @@ async function runWebhookReview(owner, repo, pullNumber, headSha) {
       }
       body += `I have audited the code changes in this Pull Request and generated **${commentsToPost.length} actionable inline suggestion${commentsToPost.length === 1 ? '' : 's'}**.\n\nPlease review my feedback and suggestions below. Happy coding! 🚀`;
 
-      await octokit.rest.pulls.createReview({
+      const { data: createdReview } = await octokit.rest.pulls.createReview({
         owner,
         repo,
         pull_number: pullNumber,
@@ -1696,10 +1717,11 @@ async function runWebhookReview(owner, repo, pullNumber, headSha) {
         body,
         comments: batch
       });
+      postedReviewIds.push(createdReview.id);
     }
   } else if (aiCommentsDiscarded > 0) {
     console.warn(`⚠️ ${aiCommentsDiscarded} AI comments were discarded due to line number mismatches — posting COMMENT review instead of approving.`);
-    await octokit.rest.pulls.createReview({
+    const { data: createdReview } = await octokit.rest.pulls.createReview({
       owner,
       repo,
       pull_number: pullNumber,
@@ -1711,6 +1733,7 @@ The AI engine identified **${aiCommentsDiscarded} potential issue(s)** but could
 
 **Action required:** Please manually review the changes for issues the AI may have detected. Re-run the review after pushing additional changes to re-evaluate.`
     });
+    postedReviewIds.push(createdReview.id);
   } else if (!aiEngineQueried) {
     console.error('❌ AI Engine was unreachable or returned an empty/malformed response — posting COMMENT review instead of auto-approving.');
     await octokit.rest.pulls.createReview({
@@ -1725,9 +1748,10 @@ The AI engine could not be reached or returned an unexpected response during thi
 
 Please ensure the AI Engine service is running correctly and re-trigger the review for a complete analysis.`
     });
+    postedReviewIds.push(createdReview.id);
   } else {
     console.log('🎉 No code issues or recommendations found. Posting approval review...');
-    await octokit.rest.pulls.createReview({
+    const { data: createdReview } = await octokit.rest.pulls.createReview({
       owner,
       repo,
       pull_number: pullNumber,
@@ -1737,6 +1761,7 @@ Please ensure the AI Engine service is running correctly and re-trigger the revi
 
 🎉 Outstanding work! I have scanned the PR and found **0 issues**. Your changes look pristine, clean, and optimized! Approved! 🚀`
     });
+    postedReviewIds.push(createdReview.id);
 
     try {
       await octokit.rest.issues.addLabels({
@@ -1749,6 +1774,10 @@ Please ensure the AI Engine service is running correctly and re-trigger the revi
     } catch (err) {
       console.warn('⚠️ Could not add gssoc:approved label:', err.message);
     }
+  }
+
+  if (redisClient && postedReviewIds.length > 0) {
+    await storeReviewIds(redisClient, owner, repo, pullNumber, postedReviewIds);
   }
 }
 
