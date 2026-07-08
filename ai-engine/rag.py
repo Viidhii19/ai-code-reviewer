@@ -11,6 +11,8 @@ _COLLECTION_NAME = os.getenv("CHROMA_COLLECTION", "reposage_code_chunks")
 _PERSIST_DIR = os.getenv("CHROMA_PERSIST_DIR", "./chroma_data")
 _CHROMA_HOST = os.getenv("CHROMA_HOST", "")
 _CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8000"))
+_CHROMA_API_KEY = os.getenv("CHROMA_API_KEY", "")
+_CHROMA_AUTH_PROVIDER = os.getenv("CHROMA_AUTH_PROVIDER", "")
 _MAX_INGEST_CHUNKS = int(os.getenv("MAX_INGEST_CHUNKS", "500"))
 
 _client = None
@@ -23,10 +25,14 @@ def _get_client() -> chromadb.ClientAPI:
         with _client_lock:
             if _client is None:
                 if _CHROMA_HOST:
+                    settings_dict = {"anonymized_telemetry": False}
+                    if _CHROMA_AUTH_PROVIDER and _CHROMA_API_KEY:
+                        settings_dict["chroma_client_auth_provider"] = _CHROMA_AUTH_PROVIDER
+                        settings_dict["chroma_client_auth_credentials"] = _CHROMA_API_KEY
                     _client = chromadb.HttpClient(
                         host=_CHROMA_HOST,
                         port=_CHROMA_PORT,
-                        settings=Settings(anonymized_telemetry=False),
+                        settings=Settings(**settings_dict),
                     )
                 else:
                     _client = chromadb.PersistentClient(
