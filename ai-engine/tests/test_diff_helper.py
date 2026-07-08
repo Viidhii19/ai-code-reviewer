@@ -75,7 +75,7 @@ class TestFilterFilesByChanges:
         assert len(filtered) == 2
         assert skipped == 0
 
-    def test_duplicate_names_in_files_not_de_duped(self):
+    def test_duplicate_names_in_files_not_de_duplicated(self):
         """If files list has duplicate names, both are kept when in changed set."""
         files = [
             type("FileItem", (), {"name": "file.js"})(),
@@ -254,7 +254,3 @@ class TestGetChangedFilesFromGithubPrErrorHandling:
             assert result == set()
         finally:
             diff_helper.requests.get = original_get
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
