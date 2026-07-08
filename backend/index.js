@@ -9,7 +9,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { Octokit } from '@octokit/rest';
-import { createFrontendSessionCookie, requireApiKey, SESSION_COOKIE_NAME, validateSessionSecret } from './utils/authMiddleware.js';
+import { createFrontendSessionCookie, requireApiKey, SESSION_COOKIE_NAME, validateSessionSecret, isValidUuid } from './utils/authMiddleware.js';
 import rateLimit from 'express-rate-limit';
 import RedisStore from 'rate-limit-redis';
 import Redis from 'ioredis';
@@ -30,6 +30,7 @@ import { DANGEROUS_PHRASES, HOMOGLYPH_MAP } from './shared/dangerousPhrases.js';
 import { verifyPort } from './utils/envVerifier.js';
 import { sanitizeRedisKey } from './utils/redisSafe.js';
 import { mockAIReview } from './utils/mockAIReview.js';
+import { loadConfigFile, applySeverityConfig } from './utils/severityConfig.js';
 import AnalysisCache from './utils/analysisCache.js';
 import mongoose from 'mongoose';
 import Analytics from './models/Analytics.js';
@@ -228,10 +229,26 @@ function validateCsrfToken(token) {
 }
 
 // CSRF validation middleware for state-changing methods
-function csrfProtection(req, res, next) {
+async function csrfProtection(req, res, next) {
   if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
     const headerToken = req.headers['x-csrf-token'];
     const cookieToken = req.cookies?.[CSRF_COOKIE_NAME];
+    const sessionId = req.body?.sessionId;
+
+    // For session-scoped endpoints, additionally validate against stored CSRF token
+    if (sessionId) {
+      try {
+        const session = await Session.findOne({ sessionId }).select('csrfToken').lean();
+        if (session && session.csrfToken) {
+          const storedBuf = Buffer.from(String(session.csrfToken));
+          const headerBuf = Buffer.from(String(headerToken || ''));
+          if (storedBuf.length === headerBuf.length && crypto.timingSafeEqual(storedBuf, headerBuf)) {
+            return next();
+          }
+        }
+      } catch { /* fall through to normal validation */ }
+    }
+
     if (!headerToken || !cookieToken) {
       // Allow session creation and CSRF token endpoints to function
       if (req.path.endsWith('/api/session') || req.path.endsWith('/api/csrf-token')) {
@@ -639,6 +656,7 @@ app.post('/api/analyze', requireApiKey, requireJsonContentType, analyzeLimiter, 
     try {
       // 1. Load ignore patterns and read files
       const ignorePatterns = loadIgnorePatterns(clonePath);
+      const severityConfig = loadConfigFile(clonePath);
       const files = readFilesRecursively(clonePath, [], clonePath, ignorePatterns);
       
       if (files.length === 0) {
@@ -689,6 +707,7 @@ app.post('/api/analyze', requireApiKey, requireJsonContentType, analyzeLimiter, 
           console.warn('⚠️ FastAPI engine not running, falling back to local Express review handler');
           const mockRes = mockAIReview(files, model);
           mockRes._mock = true;
+          mockRes._mockWarning = true;
           return mockRes;
         }
       }, repoUrl);
@@ -715,6 +734,17 @@ app.post('/api/analyze', requireApiKey, requireJsonContentType, analyzeLimiter, 
               }
             });
           }
+          
+          if (reviewResult.fileReviews[file.name]) {
+            ['bugs', 'security', 'optimization', 'styling'].forEach(cat => {
+              if (reviewResult.fileReviews[file.name][cat]) {
+                reviewResult.fileReviews[file.name][cat] = applySeverityConfig(
+                  reviewResult.fileReviews[file.name][cat],
+                  severityConfig
+                );
+              }
+            });
+          }
         });
       }
 
@@ -737,6 +767,7 @@ app.post('/api/analyze', requireApiKey, requireJsonContentType, analyzeLimiter, 
       if (estimatedSize <= MAX_SESSION_DOC_SIZE) {
         sessionId = crypto.randomUUID();
         sessionOwnerToken = crypto.randomUUID();
+        const csrfToken = generateCsrfToken();
         try {
           await Session.create({
             sessionId,
@@ -745,6 +776,7 @@ app.post('/api/analyze', requireApiKey, requireJsonContentType, analyzeLimiter, 
             files: storedFiles,
             lastAccessedAt: new Date(),
             ownerToken: sessionOwnerToken,
+            csrfToken,
           });
           sessionPersisted = true;
         } catch (sessionErr) {
@@ -853,9 +885,9 @@ app.post('/api/analyze', requireApiKey, requireJsonContentType, analyzeLimiter, 
     security: Math.max(0, 100 - totalSecurityIssues * 15),
     maintainability: Math.max(0, 100 - totalBugs * 3),
     optimization: Math.max(0, 100 - totalOptimizations * 1),
-    documentation: 80,
-    duplication: 90,
-    testCoverage: 75,
+    documentation: null,
+    duplication: null,
+    testCoverage: null,
   },
 
   recommendations: [
@@ -947,8 +979,18 @@ if (reviewResult?.fileReviews) {
   });
 }
       
-      // 7. Return result
-      return res.json({
+      // 7. Set CSRF cookie if session was persisted
+      if (sessionPersisted) {
+        res.cookie(CSRF_COOKIE_NAME, csrfToken, {
+          httpOnly: true,
+          sameSite: 'strict',
+          path: '/',
+          secure: process.env.NODE_ENV === 'production',
+        });
+      }
+
+      // 8. Return result
+      return res.json({ ...(sessionPersisted ? { csrfToken } : {}),
   success: true,
 
   repoName,
@@ -1038,12 +1080,19 @@ app.post('/api/analyze-file', requireApiKey, requireJsonContentType, analyzeLimi
       if (aiResponse.ok) {
         const resData = await aiResponse.json();
         reviewResult = resData;
+      } else if (aiResponse.status === 401) {
+        const errData = await aiResponse.json().catch(() => ({}));
+        throw new Error(errData.error || 'AI Engine authentication failed');
       } else {
         throw new Error('AI engine responded with error');
       }
     } catch (err) {
+      if (err.message.includes('authentication failed')) {
+        throw err;
+      }
       const { mockAIReview } = await import('./utils/mockAIReview.js');
       const mockRes = mockAIReview(files, model);
+      mockRes._mockWarning = true;
       reviewResult = mockRes;
     }
 
@@ -1096,6 +1145,9 @@ app.post('/api/chat', requireApiKey, requireJsonContentType, chatLimiter, async 
   if (!sessionId) {
     return res.status(400).json({ error: 'sessionId is required for chat.' });
   }
+  if (!isValidUuid(sessionId)) {
+    return res.status(400).json({ error: 'Invalid sessionId format.' });
+  }
 
   let validatedPrompt;
   try {
@@ -1113,12 +1165,6 @@ app.post('/api/chat', requireApiKey, requireJsonContentType, chatLimiter, async 
       let context = null;
       try {
         context = await Session.findOne({ sessionId });
-        if (context) {
-          // Update lastAccessedAt for activity tracking. createdAt remains
-          // unchanged so the original TTL (30 minutes from creation) is
-          // preserved, preventing indefinite session extension (see issue #672).
-          await Session.updateOne({ sessionId }, { $set: { lastAccessedAt: new Date() }, $max: { absoluteExpiry: new Date(Date.now() + 24 * 60 * 60 * 1000) } });
-        }
       } catch (sessionErr) {
         console.warn('⚠️ Failed to retrieve session from MongoDB:', sessionErr.message);
       }
@@ -1166,10 +1212,10 @@ app.post('/api/chat', requireApiKey, requireJsonContentType, chatLimiter, async 
           res.json(data);
         } else {
           const errText = await aiResponse.text();
-          throw new Error(errText || 'AI engine chat request failed');
+          throw new Error(sanitizeErrorMessage(errText) || 'AI engine chat request failed');
         }
       } catch (err) {
-        console.error('❌ Chat API Error:', err.message);
+        console.error('❌ Chat API Error:', sanitizeErrorMessage(err.message));
 
         // Simple local fallback if Python FastAPI server is offline
         const responseMessage = `[Fallback Response] I see you are asking about: "${message}". Currently, the FastAPI AI Engine is offline, so I cannot analyze the full codebase for your query. Please make sure the AI Engine service is running on port 8000.`;
@@ -1206,10 +1252,10 @@ app.post('/api/rag/query', requireApiKey, async (req, res) => {
       return res.json(data);
     } else {
       const errText = await aiResponse.text();
-      throw new Error(errText || 'AI engine RAG query failed');
+      throw new Error(sanitizeErrorMessage(errText) || 'AI engine RAG query failed');
     }
   } catch (err) {
-    console.error('❌ RAG Query API Error:', err.message);
+    console.error('❌ RAG Query API Error:', sanitizeErrorMessage(err.message));
     return res.status(502).json({ error: 'RAG query failed: AI Engine unavailable.' });
   }
 });
@@ -1319,9 +1365,26 @@ app.post('/api/webhook', webhookLimiter, async (req, res) => {
       const shaDedupKey = `webhook:sha:${shaKey}`;
       let shaAlreadyReviewed;
       if (redisClient) {
-        shaAlreadyReviewed = await redisClient.sismember(shaDedupKey, headSha);
+        const added = await redisClient.sadd(shaDedupKey, headSha);
+        if (!added) {
+          shaAlreadyReviewed = 1;
+        } else {
+          shaAlreadyReviewed = 0;
+          await redisClient.expire(shaDedupKey, DELIVERY_REDIS_TTL);
+        }
       } else {
-        shaAlreadyReviewed = shaDedupMemoryMap.has(`${shaDedupKey}:${headSha}`) ? 1 : 0;
+        const mapKey = `${shaDedupKey}:${headSha}`;
+        shaAlreadyReviewed = shaDedupMemoryMap.has(mapKey) ? 1 : 0;
+        if (!shaAlreadyReviewed) {
+          // Enforce max size cap with oldest-entry eviction
+          if (shaDedupMemoryMap.size >= SHA_DEDUP_MAX_SIZE) {
+            const oldestKey = shaDedupMemoryMap.keys().next().value;
+            if (oldestKey !== undefined) {
+              shaDedupMemoryMap.delete(oldestKey);
+            }
+          }
+          shaDedupMemoryMap.set(mapKey, Date.now());
+        }
       }
       if (shaAlreadyReviewed) {
         console.log(`⏭️ Already reviewed commit ${headSha.substring(0,7)} for PR #${pullNumber}`);
@@ -1331,23 +1394,44 @@ app.post('/api/webhook', webhookLimiter, async (req, res) => {
       console.log(`📡 GitHub Webhook received: PR #${pullNumber} ${action} (${headSha.substring(0,7)}) in ${owner}/${repo}`);
 
       if (reviewQueue._queues.size >= reviewQueue._maxQueues) {
+        if (redisClient) {
+          await redisClient.srem(shaDedupKey, headSha);
+        } else {
+          shaDedupMemoryMap.delete(`${shaDedupKey}:${headSha}`);
+        }
         return res.status(429).json({ error: 'Too many pending reviews. Try again later.' });
       }
 
       // Per-repository rate limiting
       const repoKey = `${owner}/${repo}`;
-      const now = Date.now();
-      const repoEntry = repoRequestCounts.get(repoKey) || { count: 0, windowStart: now };
-      if (now - repoEntry.windowStart > REPO_WINDOW_MS) {
-        repoEntry.count = 0;
-        repoEntry.windowStart = now;
+      let currentCount;
+      if (redisClient) {
+        const redisKey = `ratelimit:repo:${repoKey}`;
+        currentCount = await redisClient.incr(redisKey);
+        if (currentCount === 1) {
+          await redisClient.expire(redisKey, Math.ceil(REPO_WINDOW_MS / 1000));
+        }
+      } else {
+        const now = Date.now();
+        const repoEntry = repoRequestCounts.get(repoKey) || { count: 0, windowStart: now };
+        if (now - repoEntry.windowStart > REPO_WINDOW_MS) {
+          repoEntry.count = 0;
+          repoEntry.windowStart = now;
+        }
+        repoEntry.count++;
+        repoRequestCounts.set(repoKey, repoEntry);
+        currentCount = repoEntry.count;
       }
-      if (repoEntry.count >= REPO_MAX_REQUESTS) {
+
+      if (currentCount > REPO_MAX_REQUESTS) {
         console.warn(`⚠️ Rate limit exceeded for repository ${repoKey}`);
+        if (redisClient) {
+          await redisClient.srem(shaDedupKey, headSha);
+        } else {
+          shaDedupMemoryMap.delete(`${shaDedupKey}:${headSha}`);
+        }
         return res.status(429).json({ error: 'Too many requests for this repository. Try again later.' });
       }
-      repoEntry.count++;
-      repoRequestCounts.set(repoKey, repoEntry);
 
       const enqueuePromise = reviewQueue.enqueue(reviewKey, { owner, repo, pullNumber, headSha }, async (item) => {
         try {
@@ -1361,22 +1445,13 @@ app.post('/api/webhook', webhookLimiter, async (req, res) => {
           }
         }
       });
-      if (enqueuePromise) {
+      if (!enqueuePromise) {
+        // Revert dedup if enqueue failed synchronously
         if (redisClient) {
-          await redisClient.sadd(shaDedupKey, headSha);
-          await redisClient.expire(shaDedupKey, DELIVERY_REDIS_TTL);
+          await redisClient.srem(shaDedupKey, headSha);
         } else {
-          const mapKey = `${shaDedupKey}:${headSha}`;
-          // Enforce max size cap with oldest-entry eviction
-          if (shaDedupMemoryMap.size >= SHA_DEDUP_MAX_SIZE) {
-            const oldestKey = shaDedupMemoryMap.keys().next().value;
-            if (oldestKey !== undefined) {
-              shaDedupMemoryMap.delete(oldestKey);
-            }
-          }
-          shaDedupMemoryMap.set(mapKey, Date.now());
+          shaDedupMemoryMap.delete(`${shaDedupKey}:${headSha}`);
         }
-      } else {
         return res.status(429).json({ error: 'Review queue full. Try again later.' });
       }
     }
@@ -1386,7 +1461,7 @@ app.post('/api/webhook', webhookLimiter, async (req, res) => {
 });
 
 // 🟢 Route: Create GitHub Issue automatically for Code Reviews
-app.post('/api/issues/create', requireApiKey, issueLimiter, async (req, res) => {
+app.post('/api/issues/create', requireApiKey, requireJsonContentType, issueLimiter, async (req, res) => {
   const { repoUrl, title, body, labels = [] } = req.body;
   const token = process.env.GITHUB_PAT;
 
@@ -1573,8 +1648,14 @@ async function runWebhookReview(owner, repo, pullNumber, headSha) {
         } else {
           console.warn('⚠️ AI engine returned HTTP 200 with empty or malformed response body — not treating as a clean analysis');
         }
+      } else if (aiResponse.status === 401) {
+        console.error('🚨 AI Engine rejected authentication. Check REPOSAGE_API_KEY in backend/.env');
+        throw new Error('AI Engine authentication failed');
       }
     } catch (err) {
+      if (err.message === 'AI Engine authentication failed') {
+        throw err;
+      }
       console.warn("⚠️ FastAPI AI Engine error, posting local scans only:", err.message);
     }
   }
@@ -1977,6 +2058,9 @@ app.get('/api/analytics/trends', requireApiKey, async (req, res) => {
     };
 
     if (req.query.sessionId && typeof req.query.sessionId === 'string') {
+      if (!isValidUuid(req.query.sessionId)) {
+        return res.status(400).json({ error: 'Invalid sessionId parameter format.' });
+      }
       matchFilter.sessionId = req.query.sessionId;
     }
 
@@ -2166,8 +2250,32 @@ app.get('/health', (req, res) => {
   });
 });
 
+// Sanitize error messages that may contain API keys or sensitive tokens.
+const SANITIZE_PATTERNS = [
+  { pattern: /(?:sk-|gsk_|api[_-]?key|apikey|token|secret|password|auth)[\s=:"']+[^\s"']{8,}/gi, replacement: '***' },
+  { pattern: /[A-Za-z0-9_-]{32,}/g, replacement: '***' },
+];
+
+function sanitizeErrorMessage(msg) {
+  if (!msg || typeof msg !== 'string') return msg;
+  let sanitized = msg;
+  for (const { pattern, replacement } of SANITIZE_PATTERNS) {
+    sanitized = sanitized.replace(pattern, replacement);
+  }
+  try {
+    const decoded = decodeURIComponent(sanitized);
+    if (decoded !== sanitized) {
+      for (const { pattern, replacement } of SANITIZE_PATTERNS) {
+        sanitized = sanitized.replace(pattern, replacement);
+      }
+    }
+  } catch { /* keep as-is */ }
+  return sanitized;
+}
+
 const errorHandler = (err, req, res, next) => {
-  console.error('Unhandled error in request:', err.message);
+  const safeMessage = sanitizeErrorMessage(err.message);
+  console.error('Unhandled error in request:', safeMessage);
   if (err.stack) {
     console.error(err.stack);
   }
@@ -2176,7 +2284,7 @@ const errorHandler = (err, req, res, next) => {
   }
   const statusCode = err.statusCode || err.status || 500;
   res.status(statusCode).json({
-    error: process.env.NODE_ENV === 'production' ? 'Internal server error' : err.message,
+    error: process.env.NODE_ENV === 'production' ? 'Internal server error' : safeMessage,
   });
 };
 app.use(errorHandler);
