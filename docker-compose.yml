@@ -10,6 +10,12 @@ services:
       - IS_PERSISTENT=TRUE
       - ANONYMIZED_TELEMETRY=${ANONYMIZED_TELEMETRY:-FALSE}
     restart: always
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
   ai-engine:
     build:
@@ -30,8 +36,15 @@ services:
       - CHROMA_PORT=${CHROMA_PORT:-8000}
       - CHROMA_COLLECTION=${CHROMA_COLLECTION:-reposage_code_chunks}
     depends_on:
-      - chromadb
+      chromadb:
+        condition: service_healthy
     restart: always
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
   backend:
     build:
@@ -53,8 +66,15 @@ services:
       - GIT_CLONE_TIMEOUT=${GIT_CLONE_TIMEOUT:-120000}
       - MAX_REPO_SIZE_MB=${MAX_REPO_SIZE_MB:-100}
     depends_on:
-      - ai-engine
+      ai-engine:
+        condition: service_healthy
     restart: always
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:5000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
   frontend:
     build:
@@ -69,8 +89,15 @@ services:
     environment:
       - VITE_API_URL=http://localhost:5000
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     restart: always
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
 volumes:
   chroma_data:
