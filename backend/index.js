@@ -344,16 +344,25 @@ app.get('/api/csrf-token', (req, res) => {
   res.json({ csrfToken });
 });
 
-// Ensure temp_repos folder exists
+// Ensure temp_repos folder is clean on startup
 const tempReposDir = path.join(__dirname, 'temp_repos');
-if (!fs.existsSync(tempReposDir)) {
+try {
+  if (fs.existsSync(tempReposDir)) {
+    fs.rmSync(tempReposDir, { recursive: true, force: true });
+  }
   fs.mkdirSync(tempReposDir, { recursive: true });
+} catch (error) {
+  console.warn(`⚠️ Failed to clean up temp_repos directory on startup: ${error.message}`);
 }
 
 // Clean up temp_repos on process exit to avoid leftover clones
 function cleanupTempRepos() {
-  if (fs.existsSync(tempReposDir)) {
-    fs.rmSync(tempReposDir, { recursive: true, force: true });
+  try {
+    if (fs.existsSync(tempReposDir)) {
+      fs.rmSync(tempReposDir, { recursive: true, force: true });
+    }
+  } catch (error) {
+    console.error(`Failed to clean up temp_repos on exit: ${error.message}`);
   }
 }
 function onShutdown() { cleanupTempRepos(); cleanupTimers(); if (redisClient) redisClient.quit(); closeDatabase(); process.exit(0); }
