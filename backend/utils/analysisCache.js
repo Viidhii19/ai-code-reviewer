@@ -28,6 +28,10 @@ class AsyncLock {
       if (resolve) resolve();
     }
   }
+
+  isFree() {
+    return this._promise === null;
+  }
 }
 
 class AnalysisCache {
@@ -226,8 +230,19 @@ class AnalysisCache {
           }
         }
       }
+      this._cleanupIdleLocks();
     }, intervalMs);
     if (this._sweeper.unref) this._sweeper.unref();
+  }
+
+  _cleanupIdleLocks() {
+    // Per-key locks are stored indefinitely after first use. Reclaim the ones
+    // that are no longer held so the map does not grow without bound.
+    for (const [key, lock] of this._locks) {
+      if (lock.isFree()) {
+        this._locks.delete(key);
+      }
+    }
   }
 
   _stopSweeper() {
