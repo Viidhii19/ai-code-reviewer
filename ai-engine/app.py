@@ -1,5 +1,6 @@
 import sys
 import os
+import html
 import json
 import re
 import time
@@ -228,7 +229,7 @@ def sanitize_ai_output(text: str) -> str:
     )
 
     for placeholder, original in placeholders.items():
-        text = text.replace(placeholder, original)
+        text = text.replace(placeholder, html.escape(original))
 
     return text
 
