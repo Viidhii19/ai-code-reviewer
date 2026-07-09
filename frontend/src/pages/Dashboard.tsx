@@ -347,6 +347,18 @@ export default function Dashboard() {
   const [apiError, setApiError] = useState<string | null>(null);
   const [storageWarning, setStorageWarning] = useState(false);
 
+  // Accessibility Announcement State
+  const [announcement, setAnnouncement] = useState("");
+  const hasResult = !!analysisResult;
+
+  useEffect(() => {
+    if (isLoading) {
+      setAnnouncement("Starting AI analysis, please wait...");
+    } else if (hasResult) {
+      setAnnouncement("Analysis complete. Results are now available below.");
+    }
+  }, [isLoading, hasResult]);
+
   // --- File Tree Utilities ---
   interface FileTreeNode {
     name: string;
@@ -1143,6 +1155,23 @@ export default function Dashboard() {
         boxSizing: "border-box",
       }}
     >
+      <div
+        aria-live="polite"
+        aria-atomic="true"
+        style={{
+          position: "absolute",
+          width: "1px",
+          height: "1px",
+          padding: 0,
+          margin: "-1px",
+          overflow: "hidden",
+          clip: "rect(0, 0, 0, 0)",
+          whiteSpace: "nowrap",
+          border: 0,
+        }}
+      >
+        {announcement}
+      </div>
       {/* 🚀 Main Layout Split */}
       <main
         style={{
