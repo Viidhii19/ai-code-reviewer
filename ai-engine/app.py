@@ -705,7 +705,7 @@ You must obey the JSON output format above."""
                 raise HTTPException(status_code=500, detail=f"Groq API reasoning failed on first batch: {sanitize_error(str(e), api_key)}")
             else:
                 print(f"⚠️ Skipping failed batch {idx + 1} and continuing...")
-                continue
+                return
 
     combined_result["truncatedFiles"] = truncated_files
     if diff_mode_header:

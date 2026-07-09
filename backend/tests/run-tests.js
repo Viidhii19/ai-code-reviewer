@@ -122,10 +122,10 @@ function runTests() {
     .filter((name) => name.endsWith('.test.js') && name !== 'run-tests.js');
 
   if (nodeTestFiles.length > 0) {
-    console.log(`\n🧪 Running node:test suites: ${nodeTestFiles.join(', ')}`);
+    console.log(`\n🧪 Running node:test suites (${nodeTestFiles.length} files)`);
     const result = spawnSync(
       process.execPath,
-      ['--test', '--test-concurrency=1', ...nodeTestFiles.map((f) => path.join(__dirname, f))],
+      ['--test', '--test-concurrency=1', __dirname],
       { stdio: 'inherit' }
     );
     if (result.status !== 0) {
