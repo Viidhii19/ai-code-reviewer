@@ -33,7 +33,11 @@ import { sanitizeRedisKey } from './utils/redisSafe.js';
 import { mockAIReview } from './utils/mockAIReview.js';
 import { loadConfigFile, applySeverityConfig } from './utils/severityConfig.js';
 import AnalysisCache from './utils/analysisCache.js';
+<<<<<<< HEAD
 import { getPriorReviewIds, storeReviewIds, clearReviewIds, supersedePriorReviews } from './utils/reviewTracker.js';
+=======
+import DedupStore from './utils/dedupStore.js';
+>>>>>>> pr-1703
 import mongoose from 'mongoose';
 import Analytics from './models/Analytics.js';
 import Session, { estimateSessionSize } from './models/Session.js';
@@ -89,6 +93,7 @@ if (process.env.REDIS_URL) {
   redisClient = new Redis(process.env.REDIS_URL);
   redisClient.on('error', (err) => console.error('Redis Client Error', err));
 }
+const dedupStore = new DedupStore(redisClient);
 
 // Per-IP rate limiting for expensive endpoints
 const analyzeLimiter = rateLimit({
@@ -499,6 +504,7 @@ async function generateDependencyReport(clonePath) {
 const DELIVERY_REDIS_TTL = 300;
 
 
+<<<<<<< HEAD
 // In-memory fallback for webhook dedup when Redis is unavailable
 const dedupMemorySet = new Set();
 const shaDedupMemoryMap = new Map();
@@ -512,6 +518,8 @@ function checkAndSetDedup(key) {
   setTimeout(() => dedupMemorySet.delete(key), DEDUP_MEMORY_TTL).unref();
   return 1;
 }
+=======
+>>>>>>> pr-1703
 
 // Periodic sweeper for stale exclusive locks to prevent unbounded memory growth
 const EXCLUSIVE_LOCK_CLEANUP_INTERVAL = 5 * 60 * 1000;
@@ -1380,6 +1388,7 @@ app.post('/api/webhook', webhookLimiter, async (req, res) => {
     if (!deliveryId || typeof deliveryId !== 'string') {
       return res.status(400).json({ error: 'Missing x-github-delivery header.' });
     }
+<<<<<<< HEAD
     const GITHUB_DELIVERY_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     if (!GITHUB_DELIVERY_UUID_RE.test(deliveryId)) {
       console.warn(`Rejected malformed x-github-delivery header: ${deliveryId}`);
@@ -1400,6 +1409,15 @@ app.post('/api/webhook', webhookLimiter, async (req, res) => {
     if (redisClient) {
       await redisClient.expire(deliveryDedupKey, DELIVERY_REDIS_TTL);
     }
+=======
+    const deliveryDedupKey = `webhook:delivery:${deliveryId}`;
+    const deliveryAlreadyProcessed = await dedupStore.has(deliveryDedupKey);
+    if (deliveryAlreadyProcessed) {
+      console.log(`⏭️ Skipping duplicate webhook delivery: ${deliveryId}`);
+      return res.json({ success: true, message: 'Webhook received (duplicate skipped).' });
+    }
+    await dedupStore.set(deliveryDedupKey, Date.now().toString(), DELIVERY_REDIS_TTL * 1000);
+>>>>>>> pr-1703
 
     const action = payload.action;
     if (action === 'opened' || action === 'synchronize') {
@@ -1409,6 +1427,7 @@ app.post('/api/webhook', webhookLimiter, async (req, res) => {
       const repo = payload.repository.name;
       const reviewKey = `${owner}/${repo}/#${pullNumber}`;
 
+<<<<<<< HEAD
       const shaKey = `${sanitizeRedisKey(owner)}/${sanitizeRedisKey(repo)}/#${sanitizeRedisKey(String(pullNumber))}`;
       const shaDedupKey = `webhook:sha:${shaKey}`;
       let shaAlreadyReviewed;
@@ -1434,6 +1453,11 @@ app.post('/api/webhook', webhookLimiter, async (req, res) => {
           shaDedupMemoryMap.set(mapKey, Date.now());
         }
       }
+=======
+      const shaKey = `${owner}/${repo}/#${pullNumber}`;
+      const shaDedupKey = `webhook:sha:${shaKey}`;
+      const shaAlreadyReviewed = await dedupStore.isMember(shaDedupKey, headSha);
+>>>>>>> pr-1703
       if (shaAlreadyReviewed) {
         console.log(`⏭️ Already reviewed commit ${headSha.substring(0,7)} for PR #${pullNumber}`);
         return res.json({ success: true, message: 'Webhook received (duplicate SHA skipped).' });
@@ -1486,6 +1510,7 @@ app.post('/api/webhook', webhookLimiter, async (req, res) => {
           await runWebhookReview(item.owner, item.repo, item.pullNumber, item.headSha);
         } catch (error) {
           console.error(`❌ Webhook review failed for ${headSha}:`, error.message);
+<<<<<<< HEAD
           if (redisClient) {
             await redisClient.srem(shaDedupKey, headSha);
           } else {
@@ -1500,6 +1525,15 @@ app.post('/api/webhook', webhookLimiter, async (req, res) => {
         } else {
           shaDedupMemoryMap.delete(`${shaDedupKey}:${headSha}`);
         }
+=======
+          await dedupStore.removeFromSet(shaDedupKey, headSha);
+        }
+      });
+      if (enqueuePromise) {
+        await dedupStore.addToSet(shaDedupKey, headSha);
+        await dedupStore.expire(shaDedupKey, DELIVERY_REDIS_TTL * 1000);
+      } else {
+>>>>>>> pr-1703
         return res.status(429).json({ error: 'Review queue full. Try again later.' });
       }
     } else if (action === 'closed') {
