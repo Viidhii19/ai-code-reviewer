@@ -1057,9 +1057,14 @@ If no issues are found, reply with: {{ "reviews": [] }}"""
                     line_num = issue.get("line")
                     comment_body = issue.get("comment")
                     if line_num and comment_body:
+                        try:
+                            line_int = int(float(line_num))
+                        except (TypeError, ValueError):
+                            print(f"⚠️ Skipping review item for {file.path} with invalid line number: {line_num!r}")
+                            continue
                         comments.append({
                             "path": file.path,
-                            "line": int(line_num),
+                            "line": line_int,
                             "body": f"\n{sanitize_ai_output(comment_body)}"
                         })
         except Exception as e:
