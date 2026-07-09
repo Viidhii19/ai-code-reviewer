@@ -864,22 +864,25 @@ export default function Dashboard() {
   }, [chatHistory, isChatLoading]);
 
   useEffect(() => {
+    const controller = new AbortController();
     const loadHistory = async () => {
       try {
-        const response = await apiFetch('/api/review-history');
+        const response = await apiFetch('/api/review-history', { signal: controller.signal });
         if (!response.ok) throw new Error("Failed to fetch");
         const history = await response.json();
 
-        if (history) {
-        setAuditHistory(history);
+        if (history && !controller.signal.aborted) {
+          setAuditHistory(history);
+        }
+      } catch (err) {
+        if (err instanceof DOMException && err.name === 'AbortError') return;
+        console.error("Failed to load review history", err);
       }
-    } catch (err) {
-      console.error("Failed to load review history", err);
-    }
-  };
+    };
 
-  loadHistory();
-}, []);
+    loadHistory();
+    return () => controller.abort();
+  }, []);
 
   const handleSendChatMessage = async (e: React.FormEvent) => {
     e.preventDefault();
