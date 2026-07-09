@@ -89,11 +89,10 @@ class TestRagIngestEndpoint:
         response = client.post("/api/rag/ingest", json=payload)
         assert response.status_code == 422
 
-    @patch('rag.ingest_chunks')
-    @patch('rag.delete_repo_chunks')
-    def test_requires_rag_ingest_key_when_configured(self, mock_delete, mock_ingest, monkeypatch):
+    @patch('rag.upsert_chunks')
+    def test_requires_rag_ingest_key_when_configured(self, mock_upsert, monkeypatch):
         monkeypatch.setenv("RAG_INGEST_KEY", "ingest-secret")
-        mock_ingest.return_value = 1
+        mock_upsert.return_value = 1
         payload = {
             "repo_url": "https://github.com/test/repo",
             "chunks": [
