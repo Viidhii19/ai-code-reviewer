@@ -422,6 +422,33 @@ export default function Dashboard() {
     return sortTree(root);
   };
 
+  const fileTreeData = React.useMemo(() => {
+    if (!analysisResult?.analysis?.fileReviews) return [];
+    
+    const filteredFiles = Object.keys(
+      analysisResult.analysis.fileReviews,
+    ).filter((filePath) => {
+      const matchesSearch = filePath
+        .toLowerCase()
+        .includes(debouncedFileFilterQuery.toLowerCase());
+      if (!matchesSearch) return false;
+
+      const ext = filePath.split(".").pop()?.toLowerCase();
+      if (activeExtFilter === "JS/TS") {
+        return ["js", "jsx", "ts", "tsx"].includes(ext || "");
+      }
+      if (activeExtFilter === "Python") {
+        return ext === "py";
+      }
+      if (activeExtFilter === "CSS/HTML") {
+        return ["css", "html"].includes(ext || "");
+      }
+      return true; // All
+    });
+
+    return buildFileTree(filteredFiles);
+  }, [analysisResult, debouncedFileFilterQuery, activeExtFilter]);
+
   const collectAllFolderPaths = (nodes: FileTreeNode[]): string[] => {
     const paths: string[] = [];
     const traverse = (list: FileTreeNode[]) => {
@@ -2515,16 +2542,7 @@ export default function Dashboard() {
                     <div style={{ display: 'flex', gap: '2px' }}>
                       <button
                         onClick={() => {
-                          const filteredFiles = Object.keys(analysisResult.analysis.fileReviews).filter((filePath) => {
-                            const matchesSearch = filePath.toLowerCase().includes(debouncedFileFilterQuery.toLowerCase());
-                            if (!matchesSearch) return false;
-                            const ext = filePath.split('.').pop()?.toLowerCase();
-                            if (activeExtFilter === 'JS/TS') return ['js', 'jsx', 'ts', 'tsx'].includes(ext || '');
-                            if (activeExtFilter === 'Python') return ext === 'py';
-                            if (activeExtFilter === 'CSS/HTML') return ['css', 'html'].includes(ext || '');
-                            return true;
-                          });
-                          handleExpandAll(buildFileTree(filteredFiles));
+                          handleExpandAll(fileTreeData);
                         }}
                         title="Expand All Folders"
                         style={{
@@ -2664,28 +2682,7 @@ export default function Dashboard() {
                     ))}
                   </div>
                   {(() => {
-                    const filteredFiles = Object.keys(
-                      analysisResult.analysis.fileReviews,
-                    ).filter((filePath) => {
-                      const matchesSearch = filePath
-                        .toLowerCase()
-                        .includes(debouncedFileFilterQuery.toLowerCase());
-                      if (!matchesSearch) return false;
-
-                      const ext = filePath.split(".").pop()?.toLowerCase();
-                      if (activeExtFilter === "JS/TS") {
-                        return ["js", "jsx", "ts", "tsx"].includes(ext || "");
-                      }
-                      if (activeExtFilter === "Python") {
-                        return ext === "py";
-                      }
-                      if (activeExtFilter === "CSS/HTML") {
-                        return ["css", "html"].includes(ext || "");
-                      }
-                      return true; // All
-                    });
-
-                    if (filteredFiles.length === 0) {
+                    if (fileTreeData.length === 0) {
                       return (
                         <div
                           style={{
@@ -2703,8 +2700,6 @@ export default function Dashboard() {
                         </div>
                       );
                     }
-
-                    const fileTree = buildFileTree(filteredFiles);
 
                     const renderTreeNode = (node: FileTreeNode, depth: number = 0) => {
                       if (node.isFolder) {
@@ -2810,7 +2805,7 @@ export default function Dashboard() {
                       );
                     };
 
-                    return fileTree.map(node => renderTreeNode(node, 0));
+                    return fileTreeData.map(node => renderTreeNode(node, 0));
                   })()}
                 </div>
 
