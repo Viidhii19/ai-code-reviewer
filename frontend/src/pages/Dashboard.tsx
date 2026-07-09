@@ -112,6 +112,7 @@ export interface BackendResponse {
   sessionId?: string;
   sessionPersisted?: boolean;
   _mock?: boolean;
+  partial_review?: boolean;
   warnings?: Array<{ file: string; warning: string }>;
 }
 
@@ -2104,6 +2105,27 @@ export default function Dashboard() {
                   <span>
                     AI Engine offline — showing simulated review results.
                     Start the backend AI service for real analysis.
+                  </span>
+                </div>
+              )}
+              {analysisResult.partial_review && (
+                <div
+                  style={{
+                    background: "rgba(251,191,36,0.12)",
+                    border: "1px solid rgba(251,191,36,0.35)",
+                    borderRadius: "8px",
+                    padding: "12px 16px",
+                    color: "#fbbf24",
+                    fontSize: "13px",
+                    fontWeight: 600,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "8px",
+                  }}
+                >
+                  <AlertTriangle size={18} style={{ color: "#fbbf24" }} />
+                  <span>
+                    Warning: Repository size exceeded AI context limits. This is a partial review of the core files.
                   </span>
                 </div>
               )}

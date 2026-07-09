@@ -672,7 +672,25 @@ app.post('/api/analyze', requireApiKey, requireJsonContentType, analyzeLimiter, 
       // 1. Load ignore patterns and read files
       const ignorePatterns = loadIgnorePatterns(clonePath);
       const severityConfig = loadConfigFile(clonePath);
-      const files = readFilesRecursively(clonePath, [], clonePath, ignorePatterns);
+      let files = readFilesRecursively(clonePath, [], clonePath, ignorePatterns);
+      
+      let partial_review = false;
+      const MAX_PAYLOAD_CHARS = 30000;
+      let currentPayloadLength = 0;
+      let truncatedFiles = [];
+      for (const file of files) {
+        if (currentPayloadLength + file.content.length > MAX_PAYLOAD_CHARS) {
+          partial_review = true;
+          const allowedChars = MAX_PAYLOAD_CHARS - currentPayloadLength;
+          if (allowedChars > 0) {
+            truncatedFiles.push({ ...file, content: file.content.substring(0, allowedChars) });
+          }
+          break;
+        }
+        truncatedFiles.push(file);
+        currentPayloadLength += file.content.length;
+      }
+      files = truncatedFiles;
       
       if (files.length === 0) {
         await deleteFolderRecursive(clonePath);
@@ -1013,6 +1031,8 @@ if (reviewResult?.fileReviews) {
   filesReviewedCount: files.length,
 
   analysis: reviewResult,
+  
+  partial_review,
 
   repositoryHealth,
 
