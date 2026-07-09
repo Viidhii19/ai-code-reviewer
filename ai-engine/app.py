@@ -861,7 +861,7 @@ async def chat_with_repository(request: ChatRequest):
                 chunk_parts = []
                 for i, c in enumerate(rag_chunks, 1):
                     meta = c.get("metadata", {})
-                    source = meta.get("file_path", meta.get("source", "unknown"))
+                    source = meta.get("source_file", meta.get("fileName", "unknown"))
                     chunk_parts.append(f"[Chunk {i} from {source}]\n{c['content']}")
                     rag_sources.append({
                         "chunk_id": c.get("chunk_id"),
