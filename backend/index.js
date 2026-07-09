@@ -344,16 +344,25 @@ app.get('/api/csrf-token', (req, res) => {
   res.json({ csrfToken });
 });
 
-// Ensure temp_repos folder exists
+// Ensure temp_repos folder is clean on startup
 const tempReposDir = path.join(__dirname, 'temp_repos');
-if (!fs.existsSync(tempReposDir)) {
+try {
+  if (fs.existsSync(tempReposDir)) {
+    fs.rmSync(tempReposDir, { recursive: true, force: true });
+  }
   fs.mkdirSync(tempReposDir, { recursive: true });
+} catch (error) {
+  console.warn(`⚠️ Failed to clean up temp_repos directory on startup: ${error.message}`);
 }
 
 // Clean up temp_repos on process exit to avoid leftover clones
 function cleanupTempRepos() {
-  if (fs.existsSync(tempReposDir)) {
-    fs.rmSync(tempReposDir, { recursive: true, force: true });
+  try {
+    if (fs.existsSync(tempReposDir)) {
+      fs.rmSync(tempReposDir, { recursive: true, force: true });
+    }
+  } catch (error) {
+    console.error(`Failed to clean up temp_repos on exit: ${error.message}`);
   }
 }
 function onShutdown() { cleanupTempRepos(); cleanupTimers(); if (redisClient) redisClient.quit(); closeDatabase(); process.exit(0); }
@@ -672,7 +681,25 @@ app.post('/api/analyze', requireApiKey, requireJsonContentType, analyzeLimiter, 
       // 1. Load ignore patterns and read files
       const ignorePatterns = loadIgnorePatterns(clonePath);
       const severityConfig = loadConfigFile(clonePath);
-      const files = readFilesRecursively(clonePath, [], clonePath, ignorePatterns);
+      let files = readFilesRecursively(clonePath, [], clonePath, ignorePatterns);
+      
+      let partial_review = false;
+      const MAX_PAYLOAD_CHARS = 30000;
+      let currentPayloadLength = 0;
+      let truncatedFiles = [];
+      for (const file of files) {
+        if (currentPayloadLength + file.content.length > MAX_PAYLOAD_CHARS) {
+          partial_review = true;
+          const allowedChars = MAX_PAYLOAD_CHARS - currentPayloadLength;
+          if (allowedChars > 0) {
+            truncatedFiles.push({ ...file, content: file.content.substring(0, allowedChars) });
+          }
+          break;
+        }
+        truncatedFiles.push(file);
+        currentPayloadLength += file.content.length;
+      }
+      files = truncatedFiles;
       
       if (files.length === 0) {
         await deleteFolderRecursive(clonePath);
@@ -1013,6 +1040,8 @@ if (reviewResult?.fileReviews) {
   filesReviewedCount: files.length,
 
   analysis: reviewResult,
+  
+  partial_review,
 
   repositoryHealth,
 

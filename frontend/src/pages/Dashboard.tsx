@@ -112,6 +112,7 @@ export interface BackendResponse {
   sessionId?: string;
   sessionPersisted?: boolean;
   _mock?: boolean;
+  partial_review?: boolean;
   warnings?: Array<{ file: string; warning: string }>;
 }
 
@@ -347,6 +348,18 @@ export default function Dashboard() {
   const [apiError, setApiError] = useState<string | null>(null);
   const [storageWarning, setStorageWarning] = useState(false);
 
+  // Accessibility Announcement State
+  const [announcement, setAnnouncement] = useState("");
+  const hasResult = !!analysisResult;
+
+  useEffect(() => {
+    if (isLoading) {
+      setAnnouncement("Starting AI analysis, please wait...");
+    } else if (hasResult) {
+      setAnnouncement("Analysis complete. Results are now available below.");
+    }
+  }, [isLoading, hasResult]);
+
   // --- File Tree Utilities ---
   interface FileTreeNode {
     name: string;
@@ -408,6 +421,33 @@ export default function Dashboard() {
 
     return sortTree(root);
   };
+
+  const fileTreeData = React.useMemo(() => {
+    if (!analysisResult?.analysis?.fileReviews) return [];
+    
+    const filteredFiles = Object.keys(
+      analysisResult.analysis.fileReviews,
+    ).filter((filePath) => {
+      const matchesSearch = filePath
+        .toLowerCase()
+        .includes(debouncedFileFilterQuery.toLowerCase());
+      if (!matchesSearch) return false;
+
+      const ext = filePath.split(".").pop()?.toLowerCase();
+      if (activeExtFilter === "JS/TS") {
+        return ["js", "jsx", "ts", "tsx"].includes(ext || "");
+      }
+      if (activeExtFilter === "Python") {
+        return ext === "py";
+      }
+      if (activeExtFilter === "CSS/HTML") {
+        return ["css", "html"].includes(ext || "");
+      }
+      return true; // All
+    });
+
+    return buildFileTree(filteredFiles);
+  }, [analysisResult, debouncedFileFilterQuery, activeExtFilter]);
 
   const collectAllFolderPaths = (nodes: FileTreeNode[]): string[] => {
     const paths: string[] = [];
@@ -1143,6 +1183,23 @@ export default function Dashboard() {
         boxSizing: "border-box",
       }}
     >
+      <div
+        aria-live="polite"
+        aria-atomic="true"
+        style={{
+          position: "absolute",
+          width: "1px",
+          height: "1px",
+          padding: 0,
+          margin: "-1px",
+          overflow: "hidden",
+          clip: "rect(0, 0, 0, 0)",
+          whiteSpace: "nowrap",
+          border: 0,
+        }}
+      >
+        {announcement}
+      </div>
       {/* 🚀 Main Layout Split */}
       <main
         style={{
@@ -2078,6 +2135,27 @@ export default function Dashboard() {
                   </span>
                 </div>
               )}
+              {analysisResult.partial_review && (
+                <div
+                  style={{
+                    background: "rgba(251,191,36,0.12)",
+                    border: "1px solid rgba(251,191,36,0.35)",
+                    borderRadius: "8px",
+                    padding: "12px 16px",
+                    color: "#fbbf24",
+                    fontSize: "13px",
+                    fontWeight: 600,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "8px",
+                  }}
+                >
+                  <AlertTriangle size={18} style={{ color: "#fbbf24" }} />
+                  <span>
+                    Warning: Repository size exceeded AI context limits. This is a partial review of the core files.
+                  </span>
+                </div>
+              )}
               {analysisResult.warnings && analysisResult.warnings.length > 0 && (
                 <div
                   style={{
@@ -2464,16 +2542,7 @@ export default function Dashboard() {
                     <div style={{ display: 'flex', gap: '2px' }}>
                       <button
                         onClick={() => {
-                          const filteredFiles = Object.keys(analysisResult.analysis.fileReviews).filter((filePath) => {
-                            const matchesSearch = filePath.toLowerCase().includes(debouncedFileFilterQuery.toLowerCase());
-                            if (!matchesSearch) return false;
-                            const ext = filePath.split('.').pop()?.toLowerCase();
-                            if (activeExtFilter === 'JS/TS') return ['js', 'jsx', 'ts', 'tsx'].includes(ext || '');
-                            if (activeExtFilter === 'Python') return ext === 'py';
-                            if (activeExtFilter === 'CSS/HTML') return ['css', 'html'].includes(ext || '');
-                            return true;
-                          });
-                          handleExpandAll(buildFileTree(filteredFiles));
+                          handleExpandAll(fileTreeData);
                         }}
                         title="Expand All Folders"
                         style={{
@@ -2613,28 +2682,7 @@ export default function Dashboard() {
                     ))}
                   </div>
                   {(() => {
-                    const filteredFiles = Object.keys(
-                      analysisResult.analysis.fileReviews,
-                    ).filter((filePath) => {
-                      const matchesSearch = filePath
-                        .toLowerCase()
-                        .includes(debouncedFileFilterQuery.toLowerCase());
-                      if (!matchesSearch) return false;
-
-                      const ext = filePath.split(".").pop()?.toLowerCase();
-                      if (activeExtFilter === "JS/TS") {
-                        return ["js", "jsx", "ts", "tsx"].includes(ext || "");
-                      }
-                      if (activeExtFilter === "Python") {
-                        return ext === "py";
-                      }
-                      if (activeExtFilter === "CSS/HTML") {
-                        return ["css", "html"].includes(ext || "");
-                      }
-                      return true; // All
-                    });
-
-                    if (filteredFiles.length === 0) {
+                    if (fileTreeData.length === 0) {
                       return (
                         <div
                           style={{
@@ -2652,8 +2700,6 @@ export default function Dashboard() {
                         </div>
                       );
                     }
-
-                    const fileTree = buildFileTree(filteredFiles);
 
                     const renderTreeNode = (node: FileTreeNode, depth: number = 0) => {
                       if (node.isFolder) {
@@ -2759,7 +2805,7 @@ export default function Dashboard() {
                       );
                     };
 
-                    return fileTree.map(node => renderTreeNode(node, 0));
+                    return fileTreeData.map(node => renderTreeNode(node, 0));
                   })()}
                 </div>
 
