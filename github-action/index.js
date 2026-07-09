@@ -111,8 +111,8 @@ async function run() {
     let reviewedFilesCount = 0;
     let successfulReviewsCount = 0;
     let failedReviewsCount = 0;
+    let emptyOrUnparseable = false;
     let incompleteSecretScan = false;
-
     for (const file of parsedFiles) {
       const isExcluded = excludePatterns.some(regex => regex.test(file.path));
 
@@ -194,6 +194,9 @@ If no issues are found, reply with: { "reviews": [] }`;
         });
 
         const content = completion.choices[0].message.content;
+        if (!content || typeof content !== 'string' || !content.trim()) {
+          emptyOrUnparseable = true;
+        }
         let parsed = cleanAndParseJSON(content);
         successfulReviewsCount++;
         
@@ -229,6 +232,10 @@ If no issues are found, reply with: { "reviews": [] }`;
             }
           }
         } else {
+          const hasReviewsArray = parsed && typeof parsed === 'object' && Array.isArray(parsed.reviews);
+          if (!hasReviewsArray) {
+            emptyOrUnparseable = true;
+          }
           console.warn(`⚠️ Warning: Expected array from AI response, got something else for ${file.path}. Parsed keys: ${Object.keys(parsed || {}).join(', ')}`);
         }
 
@@ -291,12 +298,15 @@ Please review my feedback and suggestions below. Happy coding! 🚀
     } else if (reviewedFilesCount > 0 && successfulReviewsCount > 0) {
       console.log('🎉 No code issues or recommendations found in successful reviews. Posting review status...');
 
-      const reviewEvent = (autoApprove && failedReviewsCount === 0 && !diffTruncated) ? 'APPROVE' : 'COMMENT';
+      const canApprove = autoApprove && failedReviewsCount === 0 && !diffTruncated && !emptyOrUnparseable;
+      const reviewEvent = canApprove ? 'APPROVE' : 'COMMENT';
       const truncationWarning = diffTruncated
         ? `\n\nWARNING: **Partial Review:** This PR exceeded the review limit of ${MAX_REVIEW_FILES} files (${totalReviewableFiles} reviewable). The remaining files were **not** analyzed, so this is **not** a full approval of all changes. Please review them manually or split the PR.`
         : '';
-      const issuesText = failedReviewsCount === 0 
-        ? `🎉 Outstanding work! I have scanned the PR and found **0 issues**. Your changes look pristine, clean, and optimized! Approved! 🚀`
+      const issuesText = failedReviewsCount === 0
+        ? (emptyOrUnparseable
+            ? `⚠️ The AI review returned an empty or unparseable response for some files (${successfulReviewsCount} attempted). No automatic approval was granted — please review this PR manually.`
+            : `🎉 Outstanding work! I have scanned the PR and found **0 issues**. Your changes look pristine, clean, and optimized! Approved! 🚀`)
         : `⚠️ I have scanned **${successfulReviewsCount}** files and found **0 issues** in them. However, **${failedReviewsCount}** files could not be reviewed due to errors.`;
         
       await octokit.rest.pulls.createReview({
@@ -314,7 +324,7 @@ ${issuesText}${truncationWarning}
 ⭐ **Support RepoSage!** If you find this AI helpful, please consider giving us a **Star** 🌟 on GitHub! Your support helps us win GSSoC '26 and grow professionally!`
       });
 
-      if (autoApprove && failedReviewsCount === 0 && !diffTruncated) {
+      if (autoApprove && failedReviewsCount === 0 && !diffTruncated && !emptyOrUnparseable) {
         try {
           await octokit.rest.issues.addLabels({
             owner,
