@@ -2408,6 +2408,14 @@ app.get('/health', (req, res) => {
     timestamp: new Date().toISOString(),
     database: isDatabaseConnected() ? 'connected' : 'disconnected',
     mode: isDatabaseConnected() ? 'full' : 'degraded',
+    circuitBreaker: reviewQueue.getCircuitState(),
+  });
+});
+
+app.get('/api/health/circuit-breaker', (req, res) => {
+  res.json({
+    ...reviewQueue.getCircuitState(),
+    timestamp: new Date().toISOString(),
   });
 });
 
