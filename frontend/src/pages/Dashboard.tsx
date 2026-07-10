@@ -324,6 +324,7 @@ function MermaidViewer({ chart, repoName }: MermaidViewerProps) {
 export default function Dashboard() {
   const [showSettings, setShowSettings] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const reportRef = useRef<HTMLDivElement>(null);
   const [showShortcutsHelp, setShowShortcutsHelp] = useState(false);
 
   // Input State
@@ -2114,6 +2115,7 @@ export default function Dashboard() {
           {/* 4. The Complete Analysis Dashboard (Split Audit View) */}
           {!isLoading && analysisResult && (
             <div
+              ref={reportRef}
               style={{
                 flexGrow: 1,
                 display: "flex",
@@ -2379,7 +2381,7 @@ export default function Dashboard() {
   )}
 </div>
               {/* Dashboard View Selection Tabs & Export Controls */}
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px", flexWrap: "wrap", width: "100%" }}>
+              <div data-html2canvas-ignore="true" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px", flexWrap: "wrap", width: "100%" }}>
                 <div style={{ display: "flex", gap: "10px" }}>
                   <button
                     onClick={() => setActiveDashboardView("audit")}
@@ -2509,7 +2511,7 @@ export default function Dashboard() {
                     <FileDown size={14} /> Export Markdown
                   </button>
                   <button
-                    onClick={() => analysisResult && handlePdfExport(analysisResult.repoName, analysisResult.analysis, apiFetch)}
+                    onClick={() => analysisResult && handlePdfExport(analysisResult.repoName, reportRef.current)}
                     style={{
                       background: "rgba(220, 38, 38, 0.1)",
                       border: "1px solid rgba(220, 38, 38, 0.3)",
@@ -2533,6 +2535,7 @@ export default function Dashboard() {
               </div>
 
               <div
+                className="pdf-grid-container"
                 style={{
                   flexGrow: 1,
                   display: "grid",
@@ -2545,7 +2548,7 @@ export default function Dashboard() {
                 }}
               >
                 {/* File Tree List */}
-                <div className="glass-panel" style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '8px', overflowY: 'auto', maxHeight: '72vh' }}>
+                <div data-html2canvas-ignore="true" className="glass-panel" style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '8px', overflowY: 'auto', maxHeight: '72vh' }}>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px' }}>
                     <h3 style={{ fontSize: '12px', fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase', margin: 0, letterSpacing: '0.5px' }}>File Navigator</h3>
                     <div style={{ display: 'flex', gap: '2px' }}>
