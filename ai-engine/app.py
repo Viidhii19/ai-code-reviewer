@@ -1058,7 +1058,7 @@ async def delete_vectors(request: VectorDeleteRequest):
 
 # 🟢 Route: AI Pull Request Review (Reviews specific file code additions/diffs)
 @app.post("/review-diff")
-async def review_diff(request: ReviewDiffRequest):
+async def review_diff(request: ReviewDiffRequest, raw_request: Request):
     if not groq_client:
         raise HTTPException(status_code=500, detail="Groq API client is not configured on this engine.")
     
@@ -1080,15 +1080,23 @@ async def review_diff(request: ReviewDiffRequest):
 
     print(f"📡 Forwarding PR diff reviews to Groq using model: {groq_model}")
 
-    for file in files_to_review:
-        if len(file.changes) == 0:
-            continue
+    # Overall timeout mirroring /analyze to prevent unbounded resource consumption
+    try:
+        async with asyncio.timeout(ANALYSIS_TIMEOUT_SECONDS):
+            for file in files_to_review:
+                # Stop processing if the client has disconnected
+                if await raw_request.is_disconnected():
+                    print("⚠️ Client disconnected, stopping review-diff processing")
+                    break
+
+                if len(file.changes) == 0:
+                    continue
+
+                changes_text = "\n".join([f"Line {c.line}: {c.content}" for c in file.changes])
+                changes_text = sanitize_file_content(changes_text)
         
-        changes_text = "\n".join([f"Line {c.line}: {c.content}" for c in file.changes])
-        changes_text = sanitize_file_content(changes_text)
-        
-        # FIXED: Prompt now explicitly requests a JSON object {"reviews": [...]}
-        review_prompt = f"""You are a Senior Staff Engineer performing an automated Pull Request code review.
+                # FIXED: Prompt now explicitly requests a JSON object {"reviews": [...]}
+                review_prompt = f"""You are a Senior Staff Engineer performing an automated Pull Request code review.
 Analyze the following code additions in the file "{file.path}". 
 Identify any logical bugs, security threats (API key leaks, hardcoded credentials, SQL injection, null references), naming/style issues, or performance optimization opportunities.
 
@@ -1110,53 +1118,55 @@ Format your JSON precisely as:
 }}
 If no issues are found, reply with: {{ "reviews": [] }}"""
 
-        try:
-            # We specify response_format={"type": "json_object"} to enforce JSON output. 
-            completion = await _call_groq_with_timeout(
-                model=groq_model,
-                messages=[
-                    {"role": "system", "content": "You are a code reviewer. Always output valid JSON matching the requested schema."},
-                    {"role": "user", "content": review_prompt}
-                ],
-                temperature=0.2,
-                response_format={"type": "json_object"}
-            )
-            content = completion.choices[0].message.content
-            if not content:
-                raise HTTPException(status_code=502, detail="Groq returned an empty or filtered response. The input may have been blocked by safety filters.")
+                try:
+                    # We specify response_format={"type": "json_object"} to enforce JSON output. 
+                    completion = await _call_groq_with_timeout(
+                        model=groq_model,
+                        messages=[
+                            {"role": "system", "content": "You are a code reviewer. Always output valid JSON matching the requested schema."},
+                            {"role": "user", "content": review_prompt}
+                        ],
+                        temperature=0.2,
+                        response_format={"type": "json_object"}
+                    )
+                    content = completion.choices[0].message.content
+                    if not content:
+                        raise HTTPException(status_code=502, detail="Groq returned an empty or filtered response. The input may have been blocked by safety filters.")
             
-            # FIXED: Parse the JSON object and reliably extract the "reviews" array
-            data = json.loads(content)
-            issues = []
+                    # FIXED: Parse the JSON object and reliably extract the "reviews" array
+                    data = json.loads(content)
+                    issues = []
             
-            if isinstance(data, dict):
-                # Safely get the 'reviews' array, fallback to searching just in case LLM hallucinates
-                issues = data.get("reviews")
-                if not isinstance(issues, list):
-                    for key, val in data.items():
-                        if isinstance(val, list):
-                            issues = val
-                            break
-            elif isinstance(data, list):
-                issues = data
+                    if isinstance(data, dict):
+                        # Safely get the 'reviews' array, fallback to searching just in case LLM hallucinates
+                        issues = data.get("reviews")
+                        if not isinstance(issues, list):
+                            for key, val in data.items():
+                                if isinstance(val, list):
+                                    issues = val
+                                    break
+                    elif isinstance(data, list):
+                        issues = data
             
-            if isinstance(issues, list):
-                for issue in issues:
-                    line_num = issue.get("line")
-                    comment_body = issue.get("comment")
-                    if line_num and comment_body:
-                        try:
-                            line_int = int(float(line_num))
-                        except (TypeError, ValueError):
-                            print(f"⚠️ Skipping review item for {file.path} with invalid line number: {line_num!r}")
-                            continue
-                        comments.append({
-                            "path": file.path,
-                            "line": line_int,
-                            "body": f"\n{sanitize_ai_output(comment_body)}"
-                        })
-        except Exception as e:
-            print(f"⚠️ Error reviewing file {file.path} on Groq: {sanitize_error(str(e), api_key)}")
+                    if isinstance(issues, list):
+                        for issue in issues:
+                            line_num = issue.get("line")
+                            comment_body = issue.get("comment")
+                            if line_num and comment_body:
+                                try:
+                                    line_int = int(float(line_num))
+                                except (TypeError, ValueError):
+                                    print(f"⚠️ Skipping review item for {file.path} with invalid line number: {line_num!r}")
+                                    continue
+                                comments.append({
+                                    "path": file.path,
+                                    "line": line_int,
+                                    "body": f"\n{sanitize_ai_output(comment_body)}"
+                                })
+                except Exception as e:
+                    print(f"⚠️ Error reviewing file {file.path} on Groq: {sanitize_error(str(e), api_key)}")
+    except asyncio.TimeoutError:
+        print(f"⚠️ review-diff timed out after {int(ANALYSIS_TIMEOUT_SECONDS)}s, returning partial results")
 
     result = {"comments": comments}
     if truncated:
