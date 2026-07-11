@@ -1,5 +1,6 @@
 import ReviewQueue from '../utils/reviewQueue.js';
 import assert from 'assert';
+import { describe, it, beforeEach } from 'node:test';
 
 describe('ReviewQueue lock separation', () => {
   let reviewQueue;
