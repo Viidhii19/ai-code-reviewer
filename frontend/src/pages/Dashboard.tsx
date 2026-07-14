@@ -14,7 +14,6 @@ import MentorshipPortal from "../components/MentorshipPortal";
 import HealthScoreSection from "../components/HealthScoreSection";
 import ChatPanel from "../components/ChatPanel";
 import MermaidDiagramViewer from "../components/MermaidDiagramViewer";
-import HealthScoreGauge from "../components/HealthScoreGauge";
 import ReactMarkdown from 'react-markdown';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
@@ -474,12 +473,12 @@ export default function Dashboard() {
               </code>
             );
           },
-          h1: ({ node, ...props }) => <h1 style={{ fontSize: "18px", fontWeight: 800, color: "#f3f4f6", margin: "14px 0 8px 0", borderBottom: "1px solid rgba(255,255,255,0.08)", paddingBottom: "4px" }} {...props} />,
-          h2: ({ node, ...props }) => <h2 style={{ fontSize: "14px", fontWeight: 700, color: "#e5e7eb", margin: "12px 0 6px 0" }} {...props} />,
-          h3: ({ node, ...props }) => <h3 style={{ fontSize: "12px", fontWeight: 600, color: "#d1d5db", margin: "10px 0 4px 0" }} {...props} />,
-          li: ({ node, ...props }) => <li style={{ marginLeft: "16px", marginBottom: "4px", fontSize: "12px", color: "#d1d5db", fontFamily: "inherit", lineHeight: 1.6 }} {...props} />,
-          p: ({ node, ...props }) => <p style={{ margin: "0 0 6px 0", fontSize: "12px", color: "#d1d5db", lineHeight: 1.6, fontFamily: "inherit" }} {...props} />,
-          strong: ({ node, ...props }) => <strong style={{ color: "#fff", fontWeight: 700 }} {...props} />
+          h1: ({ node, ...props }: any) => <h1 style={{ fontSize: "18px", fontWeight: 800, color: "#f3f4f6", margin: "14px 0 8px 0", borderBottom: "1px solid rgba(255,255,255,0.08)", paddingBottom: "4px" }} {...props} />,
+          h2: ({ node, ...props }: any) => <h2 style={{ fontSize: "14px", fontWeight: 700, color: "#e5e7eb", margin: "12px 0 6px 0" }} {...props} />,
+          h3: ({ node, ...props }: any) => <h3 style={{ fontSize: "12px", fontWeight: 600, color: "#d1d5db", margin: "10px 0 4px 0" }} {...props} />,
+          li: ({ node, ...props }: any) => <li style={{ marginLeft: "16px", marginBottom: "4px", fontSize: "12px", color: "#d1d5db", fontFamily: "inherit", lineHeight: 1.6 }} {...props} />,
+          p: ({ node, ...props }: any) => <p style={{ margin: "0 0 6px 0", fontSize: "12px", color: "#d1d5db", lineHeight: 1.6, fontFamily: "inherit" }} {...props} />,
+          strong: ({ node, ...props }: any) => <strong style={{ color: "#fff", fontWeight: 700 }} {...props} />
         }}
       >
         {md}
