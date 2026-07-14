@@ -251,7 +251,7 @@ def sanitize_ai_output(text: str) -> str:
     )
 
     for placeholder, original in placeholders.items():
-        text = text.replace(placeholder, html.escape(original))
+        text = text.replace(placeholder, original)
 
     return text
 
