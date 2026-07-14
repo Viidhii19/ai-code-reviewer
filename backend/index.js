@@ -309,7 +309,7 @@ async function csrfProtection(req, res, next) {
     }
     const newToken = generateCsrfToken();
     res.cookie(CSRF_COOKIE_NAME, newToken, {
-      httpOnly: true,
+      httpOnly: false,
       sameSite: 'strict',
       path: '/',
       secure: process.env.NODE_ENV === 'production',
