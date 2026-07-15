@@ -54,15 +54,18 @@ export function analyzeComplexity(fileContent, filePath) {
       // Single-line comment: //
       if (trimmed.startsWith('//')) {
         commentLines++;
+        return;
       }
       // Single-line block comment: /* ... */ on same line
       else if (trimmed.startsWith('/*') && trimmed.includes('*/')) {
         commentLines++;
+        return;
       }
       // Multi-line block comment opening: /*
       else if (trimmed.startsWith('/*')) {
         commentLines++;
         inBlockComment = true;
+        return;
       }
       // Line starting with * inside a doc-comment block (e.g. JSDoc)
       else if (inBlockComment && trimmed.startsWith('*')) {
@@ -92,6 +95,7 @@ export function analyzeComplexity(fileContent, filePath) {
       }
       if (trimmed.startsWith('#')) {
         commentLines++;
+        return;
       }
     } else if (ext === '.sql') {
       if (inBlockComment) {
@@ -103,15 +107,19 @@ export function analyzeComplexity(fileContent, filePath) {
       }
       if (trimmed.startsWith('--')) {
         commentLines++;
+        return;
       } else if (trimmed.startsWith('/*') && trimmed.includes('*/')) {
         commentLines++;
+        return;
       } else if (trimmed.startsWith('/*')) {
         commentLines++;
         inBlockComment = true;
+        return;
       }
     } else if (usesHtmlBlocks) {
       if (trimmed.startsWith('<!--')) {
         commentLines++;
+        return;
       }
     }
 
