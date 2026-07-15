@@ -859,7 +859,7 @@ app.post('/api/analyze', requireApiKey, requireJsonContentType, analyzeLimiter, 
       const cacheKey = analysisCache.generateKey(repoUrl, scrubbedFiles, { model, language, company, systemPrompt: validatedPrompt, temperature, maxTokens, batchSize });
       let cacheHit = !!analysisCache.get(cacheKey);
       if (cacheHit) {
-        console.log(`≡ƒÄ» Using cached analysis result for this repository and configuration`);
+        console.log(`🎯 Using cached analysis result for this repository and configuration`);
       }
 
       let reviewResult = await analysisCache.getOrSet(cacheKey, async () => {
@@ -881,7 +881,11 @@ app.post('/api/analyze', requireApiKey, requireJsonContentType, analyzeLimiter, 
             throw new Error('AI engine responded with error');
           }
         } catch (err) {
+<<<<<<< HEAD
           console.warn('ΓÜá∩╕Å FastAPI engine not running, falling back to local Express review handler');
+=======
+          console.warn('⚠️ FastAPI engine not running, falling back to local Express review handler');
+>>>>>>> 2718dea (feat: implement pre-LLM secret scrubbing to prevent credential leaks (#2418))
           const mockRes = mockAIReview(scrubbedFiles, model);
           mockRes._mock = true;
           mockRes._mockWarning = true;
