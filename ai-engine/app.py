@@ -24,6 +24,7 @@ import vectorstore
 from embeddings import is_fallback_active
 from config_loader import load_config_from_files, ConfigValidationError, CONFIG_FILENAME
 from diff_helper import get_changed_files_from_git, filter_files_by_changes, format_diff_header
+from agents.pipeline import run_batch_pipeline
 
 try:
     import redis
@@ -699,87 +700,15 @@ async def analyze_repository(request: AnalyzeRequest):
         contents_text = "\n\n".join(file_contents_summary)
         contents_text = sanitize_file_content(contents_text)
 
-        if is_first_batch:
-            review_prompt = f"""Target Company Persona: {company}
-Response Language: {language}
-
-Review this repository codebase. Find logical bugs, security threats (API leaks, hardcoded credentials, SQL injection), naming/style issues, and performance optimization opportunities.
-
-Additionally, you MUST construct a valid Mermaid.js flowchart (graph TD) that outlines the file structure, architecture, and import/dependency flows of the codebase. Ensure it compiles cleanly (use simple alphanumeric identifiers for node IDs, and wrap node labels in double quotes, e.g. A["label"]).
-
-Here is the repository structure:
-{structure_text}
-
-Here is the contents of files for this batch:
-{contents_text}
-
-You MUST reply ONLY in a valid JSON format. Do not write markdown wrapping, do not write explanations before or after.
-Format your JSON precisely as:
-{{
-  "fileReviews": {{
-    "file_path_1": {{
-      "bugs": [
-        {{ "type": "bug name", "line": 12, "description": "...", "suggestion": "..." }}
-      ],
-      "security": [
-        {{ "type": "threat type", "line": 4, "description": "...", "suggestion": "..." }}
-      ],
-      "optimization": [
-        {{ "type": "slow code", "line": 20, "description": "...", "suggestion": "..." }}
-      ],
-      "styling": [
-        {{ "type": "convention issue", "line": 15, "description": "...", "suggestion": "..." }}
-      ]
-    }}
-  }},
-  "generatedReadme": "Write a highly detailed, professional README.md markdown for the entire repository, outlining installation, folder structure, features, tech stack, and usage guidelines.",
-  "mermaidDiagram": "graph TD\\n  A[\\\"Entry Point\\\"] --> B[\\\"Module\\\"]"
-}}
-
-You must obey the JSON output format above."""
-        else:
-            review_prompt = f"""Target Company Persona: {company}
-Response Language: {language}
-
-Review this repository codebase batch. Find logical bugs, security threats (API leaks, hardcoded credentials, SQL injection), naming/style issues, and performance optimization opportunities.
-
-Here is the repository structure for context:
-{structure_text}
-
-Here is the contents of files for this batch:
-{contents_text}
-
-You MUST reply ONLY in a valid JSON format. Do not write markdown wrapping, do not write explanations before or after.
-Format your JSON precisely as:
-{{
-  "fileReviews": {{
-    "file_path_1": {{
-      "bugs": [
-        {{ "type": "bug name", "line": 12, "description": "...", "suggestion": "..." }}
-      ],
-      "security": [
-        {{ "type": "threat type", "line": 4, "description": "...", "suggestion": "..." }}
-      ],
-      "optimization": [
-        {{ "type": "slow code", "line": 20, "description": "...", "suggestion": "..." }}
-      ],
-      "styling": [
-        {{ "type": "convention issue", "line": 15, "description": "...", "suggestion": "..." }}
-      ]
-    }}
-  }}
-}}
-
-You must obey the JSON output format above."""
-
-        try:
+        print(f"⏳ Processing batch {idx + 1}/{len(batches)} ({len(batch)} files)...")
+        
+        async def _call_llm(system_prompt: str, user_prompt: str) -> dict:
             async with groq_semaphore:
-                print(f"⏳ Processing batch {idx + 1}/{len(batches)} ({len(batch)} files)...")
                 completion = await _call_groq_with_timeout(
                     model=groq_model,
                     messages=[
-                        {"role": "system", "content": base_prompt},
-                        {"role": "user", "content": review_prompt}
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
                     ],
                     temperature=temperature,
                     max_tokens=max_tokens,
@@ -789,52 +718,62 @@ You must obey the JSON output format above."""
                 response_content = completion.choices[0].message.content
                 if not response_content:
                     raise HTTPException(status_code=502, detail="Groq returned an empty or filtered response. The input may have been blocked by safety filters.")
-                batch_result = json.loads(response_content)
                 
-                # Merge results
-                if is_first_batch:
-                    if "mermaidDiagram" in batch_result:
-                        sanitized = sanitize_ai_output(batch_result["mermaidDiagram"])
-                        combined_result["mermaidDiagram"] = sanitize_mermaid_code(sanitized)
-                    if "generatedReadme" in batch_result:
-                        combined_result["generatedReadme"] = sanitize_ai_output(batch_result["generatedReadme"])
-                
-                if "fileReviews" in batch_result:
-                    for file_path, review in batch_result["fileReviews"].items():
-                        # Sanitize review items, and drop any finding whose type
-                        # (used as the rule name) is configured `off` in
-                        # .codereviewer.yml.
-                        for category in ["bugs", "security", "optimization", "styling"]:
-                            kept_items = []
-                            for item in review.get(category, []):
-                                if "suggestion" in item:
-                                    item["suggestion"] = sanitize_ai_output(item["suggestion"])
-                                if "description" in item:
-                                    item["description"] = sanitize_ai_output(item["description"])
-                                if review_config and item.get("type") and review_config.is_rule_off(_rule_key(item["type"])):
-                                    continue
-                                kept_items.append(item)
-                            review[category] = kept_items
-                        
-                        # Merge findings instead of overwriting
-                        if file_path in combined_result["fileReviews"]:
-                            print(f"WARNING: Merging findings for {file_path} from batch {idx + 1} (already exists from a previous batch)")
-                            existing = combined_result["fileReviews"][file_path]
+                try:
+                    batch_result = await run_batch_pipeline(
+                        company=company,
+                        language=language,
+                        structure_text=structure_text,
+                        contents_text=contents_text,
+                        is_first_batch=is_first_batch,
+                        base_prompt=base_prompt,
+                        llm_caller=_call_llm
+                    )
+                    
+                    # Merge results
+                    if is_first_batch:
+                        if "mermaidDiagram" in batch_result:
+                            sanitized = sanitize_ai_output(batch_result["mermaidDiagram"])
+                            combined_result["mermaidDiagram"] = sanitize_mermaid_code(sanitized)
+                        if "generatedReadme" in batch_result:
+                            combined_result["generatedReadme"] = sanitize_ai_output(batch_result["generatedReadme"])
+                    
+                    if "fileReviews" in batch_result:
+                        for file_path, review in batch_result["fileReviews"].items():
+                            # Sanitize review items, and drop any finding whose type
+                            # (used as the rule name) is configured `off` in
+                            # .codereviewer.yml.
                             for category in ["bugs", "security", "optimization", "styling"]:
-                                existing_items = existing.get(category, [])
-                                new_items = review.get(category, [])
-                                seen = set()
-                                for item in existing_items:
-                                    key = (item.get("type", ""), item.get("line", ""), item.get("description", ""))
-                                    seen.add(key)
-                                for item in new_items:
-                                    key = (item.get("type", ""), item.get("line", ""), item.get("description", ""))
-                                    if key not in seen:
-                                        existing_items.append(item)
+                                kept_items = []
+                                for item in review.get(category, []):
+                                    if "suggestion" in item:
+                                        item["suggestion"] = sanitize_ai_output(item["suggestion"])
+                                    if "description" in item:
+                                        item["description"] = sanitize_ai_output(item["description"])
+                                    if review_config and item.get("type") and review_config.is_rule_off(_rule_key(item["type"])):
+                                        continue
+                                    kept_items.append(item)
+                                review[category] = kept_items
+                            
+                            # Merge findings instead of overwriting
+                            if file_path in combined_result["fileReviews"]:
+                                print(f"WARNING: Merging findings for {file_path} from batch {idx + 1} (already exists from a previous batch)")
+                                existing = combined_result["fileReviews"][file_path]
+                                for category in ["bugs", "security", "optimization", "styling"]:
+                                    existing_items = existing.get(category, [])
+                                    new_items = review.get(category, [])
+                                    seen = set()
+                                    for item in existing_items:
+                                        key = (item.get("type", ""), item.get("line", ""), item.get("description", ""))
                                         seen.add(key)
-                                existing[category] = existing_items
-                        else:
-                            combined_result["fileReviews"][file_path] = review
+                                    for item in new_items:
+                                        key = (item.get("type", ""), item.get("line", ""), item.get("description", ""))
+                                        if key not in seen:
+                                            existing_items.append(item)
+                                            seen.add(key)
+                                    existing[category] = existing_items
+                            else:
+                                combined_result["fileReviews"][file_path] = review
 
                 truncated_files.extend(local_truncated_files)
 
