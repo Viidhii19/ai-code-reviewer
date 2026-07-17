@@ -881,11 +881,7 @@ app.post('/api/analyze', requireApiKey, requireJsonContentType, analyzeLimiter, 
             throw new Error('AI engine responded with error');
           }
         } catch (err) {
-<<<<<<< HEAD
-          console.warn('ΓÜá∩╕Å FastAPI engine not running, falling back to local Express review handler');
-=======
           console.warn('⚠️ FastAPI engine not running, falling back to local Express review handler');
->>>>>>> 2718dea (feat: implement pre-LLM secret scrubbing to prevent credential leaks (#2418))
           const mockRes = mockAIReview(scrubbedFiles, model);
           mockRes._mock = true;
           mockRes._mockWarning = true;
