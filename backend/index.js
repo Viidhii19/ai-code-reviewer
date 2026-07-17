@@ -14,6 +14,7 @@ import rateLimit from 'express-rate-limit';
 import RedisStore from 'rate-limit-redis';
 import Redis from 'ioredis';
 import { scanSecrets, scanSecretsInChanges } from './utils/secretsScanner.js';
+import { scrubRepositoryPayload } from './utils/secretScrubber.js';
 import { recordAnalysis as recordFileAnalytics } from './utils/analyticsStore.js';
 import { loadIgnorePatterns, readFilesRecursively } from './utils/ignoreHelper.js';
 import { isValidRepoUrl, parseRepoUrl, isSafeUrl } from './utils/urlValidator.js';
@@ -850,10 +851,15 @@ app.post('/api/analyze', requireApiKey, requireJsonContentType, analyzeLimiter, 
       }
 
       // 1.5. Check analysis cache to avoid redundant LLM calls for identical analyses
-      const cacheKey = analysisCache.generateKey(repoUrl, files, { model, language, company, systemPrompt: validatedPrompt, temperature, maxTokens, batchSize });
+      const scrubbedFiles = files.map(file => ({
+        ...file,
+        content: scrubRepositoryPayload(file.content)
+      }));
+
+      const cacheKey = analysisCache.generateKey(repoUrl, scrubbedFiles, { model, language, company, systemPrompt: validatedPrompt, temperature, maxTokens, batchSize });
       let cacheHit = !!analysisCache.get(cacheKey);
       if (cacheHit) {
-        console.log(`≡ƒÄ» Using cached analysis result for this repository and configuration`);
+        console.log(`🎯 Using cached analysis result for this repository and configuration`);
       }
 
       let reviewResult = await analysisCache.getOrSet(cacheKey, async () => {
@@ -864,7 +870,7 @@ app.post('/api/analyze', requireApiKey, requireJsonContentType, analyzeLimiter, 
           const aiResponse = await fetchWithTimeout(`${baseUrl}/analyze`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.REPOSAGE_API_KEY || '' },
-            body: JSON.stringify({ files, company, language, model, temperature, maxTokens, systemPrompt: validatedPrompt, batchSize })
+            body: JSON.stringify({ files: scrubbedFiles, company, language, model, temperature, maxTokens, systemPrompt: validatedPrompt, batchSize })
           }, 120000);
 
           if (aiResponse.ok) {
@@ -875,8 +881,8 @@ app.post('/api/analyze', requireApiKey, requireJsonContentType, analyzeLimiter, 
             throw new Error('AI engine responded with error');
           }
         } catch (err) {
-          console.warn('ΓÜá∩╕Å FastAPI engine not running, falling back to local Express review handler');
-          const mockRes = mockAIReview(files, model);
+          console.warn('⚠️ FastAPI engine not running, falling back to local Express review handler');
+          const mockRes = mockAIReview(scrubbedFiles, model);
           mockRes._mock = true;
           mockRes._mockWarning = true;
           return mockRes;
