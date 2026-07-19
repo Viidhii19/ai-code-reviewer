@@ -45,6 +45,7 @@ import { handleMarkdownExport, handleHtmlExport, handlePdfExport } from "../util
 import { sanitizeAuditEntry } from "../utils/sanitize";
 // Path resolves correctly: pages/ -> ../utils/api -> frontend/src/utils/api
 import { apiFetch } from "../utils/api";
+import { usePersistentReport } from '../hooks/usePersistentReport';
 
 const LazyMetricsChart = React.lazy(() =>
   import('../components/MetricsChart').then((module) => ({ default: module.MetricsChart }))
@@ -627,6 +628,8 @@ export default function Dashboard() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [useRag, setUseRag] = useState(false);
 
+  const { isHydrating, saveReport } = usePersistentReport(setRepoUrl, setSessionId);
+
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -908,10 +911,9 @@ export default function Dashboard() {
       }
 
       const data: BackendResponse = await response.json();
-      setAnalysisResult(data);
-      setSessionId(
-        data.sessionPersisted === true ? data.sessionId ?? null : null
-      );
+      const currentSessionId = data.sessionPersisted === true ? data.sessionId ?? null : null;
+      setSessionId(currentSessionId);
+      await saveReport(data, repoUrl, currentSessionId);
       persistAuditHistory(data);
       setChatHistory([]);
 
@@ -952,6 +954,15 @@ export default function Dashboard() {
     };
 
   const chatInputEmpty = !chatInput.trim();
+
+  if (isHydrating) {
+    return (
+      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', flexDirection: 'column', background: 'var(--bg-color)' }}>
+         <div className="spin-slow" style={{ width: "40px", height: "40px", border: "3px solid rgba(168,85,247,0.2)", borderTopColor: "#a855f7", borderRadius: "50%", marginBottom: "16px" }}></div>
+         <p style={{ color: '#9ca3af', fontSize: '14px', fontWeight: 500 }}>Restoring previous analysis...</p>
+      </div>
+    );
+  }
 
   return (
     <div
