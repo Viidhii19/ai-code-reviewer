@@ -44,7 +44,8 @@ async function run() {
         }
       }
     }
-    const maxTokens = parseInt(core.getInput('max-tokens') || '4096', 10);
+    const maxTokensInput = parseInt(core.getInput('max-tokens') || '4096', 10);
+    const maxTokens = Number.isFinite(maxTokensInput) ? maxTokensInput : 4096;
     const autoApprove = core.getInput('auto-approve')?.toLowerCase() === 'true';
 
     const excludePatterns = excludePathsInput
@@ -70,6 +71,7 @@ async function run() {
     }
     provider.init();
     
+    const octokit = github.getOctokit(githubToken);
     const groq = new Groq({ apiKey: groqApiKey });
 
     // 3. Verify Context
@@ -139,10 +141,14 @@ async function run() {
         continue;
       }
 
-      const ext = file.path.split('.').pop()?.toLowerCase();
-      if (!ext || !validExtensions.includes(ext)) {
-        console.log(`skip non-code file: ${file.path}`);
-        continue;
+      const fileName = file.path.split('/').pop() || file.path;
+      const hasExt = fileName.includes('.');
+      if (hasExt) {
+        const ext = fileName.split('.').pop()?.toLowerCase() || '';
+        if (!validExtensions.includes(ext)) {
+          console.log(`skip non-code file: ${file.path}`);
+          continue;
+        }
       }
 
       if (file.changes.length === 0) continue;

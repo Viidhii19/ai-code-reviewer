@@ -14,7 +14,6 @@ import MentorshipPortal from "../components/MentorshipPortal";
 import HealthScoreSection from "../components/HealthScoreSection";
 import ChatPanel from "../components/ChatPanel";
 import MermaidDiagramViewer from "../components/MermaidDiagramViewer";
-import HealthScoreGauge from "../components/HealthScoreGauge";
 import ReactMarkdown from 'react-markdown';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
@@ -117,6 +116,7 @@ export interface BackendResponse {
   filesReviewedCount: number;
   analysis: AnalysisData;
   sessionId?: string;
+  sessionOwnerToken?: string;
   sessionPersisted?: boolean;
   _mock?: boolean;
   partial_review?: boolean;
@@ -704,7 +704,7 @@ export default function Dashboard() {
       setChatHistory((prev) => {
         const updated = truncateChatHistory([
           ...prev,
-          { role: "assistant" as const, content: data.response, sources: sources.length > 0 ? sources : undefined },
+          { role: "assistant" as const, content: data.response ?? data.message ?? "", sources: sources.length > 0 ? sources : undefined },
         ]);
         if (!safeSetItem(CHAT_HISTORY_KEY, JSON.stringify(updated))) setStorageWarning(true);
         return updated;
@@ -883,6 +883,34 @@ export default function Dashboard() {
         }),
       });
 
+<<<<<<< HEAD
+=======
+      clearInterval(stepInterval);
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(
+          errorData.error || "Server error occurred during analysis.",
+        );
+      }
+
+      const data: BackendResponse = await response.json();
+      setAnalysisResult(data);
+      setSessionId(
+        data.sessionPersisted === true ? data.sessionId ?? null : null
+      );
+      if (data.sessionPersisted && data.sessionOwnerToken) {
+        localStorage.setItem("sessionOwnerToken", data.sessionOwnerToken);
+      }
+      persistAuditHistory(data);
+      setChatHistory([]);
+
+      // Select the first file reviewed automatically
+      const filesList = Object.keys(data.analysis?.fileReviews || {});
+      if (filesList.length > 0) {
+        setSelectedFile(filesList[0]);
+      }
+>>>>>>> upstream/main
     } catch (err: unknown) {
       console.error(err);
       let errMsg = (err instanceof Error ? err.message : String(err)) || "Could not connect to the backend server. Make sure node backend is running on port 5000.";

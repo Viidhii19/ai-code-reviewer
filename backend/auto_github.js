@@ -69,14 +69,15 @@ async function autoAssignAndMerge() {
     for (const issue of issues) {
       if (issue.pull_request) continue; // Skip PRs, only process issues
 
-      const { data: comments } = await octokit.rest.issues.listComments({
+      const comments = await octokit.paginate(octokit.rest.issues.listComments, {
         owner,
         repo,
-        issue_number: issue.number
+        issue_number: issue.number,
+        per_page: 100
       });
 
       for (const comment of comments) {
-        if (comment.body.toLowerCase().includes('assign me')) {
+        if (comment.body?.toLowerCase()?.includes('assign me')) {
           const userToAssign = comment.user.login;
           const assignees = issue.assignees.map(a => a.login);
           
@@ -146,15 +147,17 @@ async function autoAssignAndMerge() {
           continue;
         }
 
-        // Verify at least one approved review exists (skip if PR author)
+        // Verify at least one approved review exists (skip self-approvals)
         const { data: reviews } = await octokit.rest.pulls.listReviews({
           owner,
           repo,
           pull_number: pr.number,
         });
-        const hasApprovedReview = reviews.some(r => r.state === 'APPROVED');
+        const hasApprovedReview = reviews.some(
+          r => r.state === 'APPROVED' && r.user.login !== pr.user.login
+        );
         if (!hasApprovedReview) {
-          console.log(`   ⏭️ Skipping PR #${pr.number} — no approved review found`);
+          console.log(`   ⏭️ Skipping PR #${pr.number} — no approved review found (self-approvals excluded)`);
           continue;
         }
 
